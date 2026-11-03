@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 45
     defaults:
       run:
-        working-directory: Windows
+        working-directory: Vaultie_Windows_Setup_Buildpaket/Windows
     steps:
       - name: Quellcode laden
         uses: actions/checkout@v4
@@ -47,5 +47,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Vaultie-Windows-Installer
-          path: Windows/installer_output/Vaultie-Setup.exe
+          path: Vaultie_Windows_Setup_Buildpaket/Windows/installer_output/Vaultie-Setup.exe
           if-no-files-found: error
