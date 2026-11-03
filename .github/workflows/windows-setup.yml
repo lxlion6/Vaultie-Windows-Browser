@@ -1,0 +1,51 @@
+name: Vaultie Windows Setup EXE bauen
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: Windows
+    steps:
+      - name: Quellcode laden
+        uses: actions/checkout@v4
+      - name: Python bereitstellen
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Bibliotheken installieren
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Vaultie kompilieren
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --name Vaultie `
+            --icon assets/vaultie.ico `
+            --add-data "assets;assets" `
+            --collect-all PySide6.QtWebEngineCore `
+            --collect-all PySide6.QtWebEngineWidgets `
+            browser.py
+          if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Programmdatei fehlt' }
+      - name: Installer erstellen
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup konnte nicht installiert werden' }
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'Vaultie.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer konnte nicht erstellt werden' }
+      - name: Setup bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vaultie-Windows-Installer
+          path: Windows/installer_output/Vaultie-Setup.exe
+          if-no-files-found: error
