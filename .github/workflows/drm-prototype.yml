@@ -1,0 +1,43 @@
+name: Vaultie DRM Prototyp - Windows Testpaket
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  drm-test:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: drm-prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install castLabs ECS (official release)
+        shell: pwsh
+        run: |
+          npm install --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'castLabs Installation fehlgeschlagen' }
+      - name: Check syntax and castLabs binary
+        shell: pwsh
+        run: |
+          npm run check
+          if ($LASTEXITCODE -ne 0) { throw 'Syntaxpruefung fehlgeschlagen' }
+          if (-not (Test-Path 'node_modules/electron/dist/electron.exe')) { throw 'ECS electron.exe fehlt' }
+          Get-Item 'node_modules/electron/dist/electron.exe' | Select-Object FullName, Length
+      - name: Package Windows diagnostic prototype
+        shell: pwsh
+        run: |
+          npm run package
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Paketierung fehlgeschlagen' }
+          $exe = Get-ChildItem 'output' -Filter '*.exe' -File -Recurse | Where-Object { $_.Name -match 'Vaultie' } | Select-Object -First 1
+          if (-not $exe) { throw 'Windows DRM-Prototyp EXE fehlt' }
+          Write-Host "Test executable: $($exe.FullName)"
+      - name: Upload internal test artifact (no public release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vaultie-DRM-Prototyp-Windows
+          path: drm-prototype/output/
+          if-no-files-found: error
