@@ -25,6 +25,13 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 
 APP_NAME = "Vaultie"
 HOME = "vaultie:start"
+DEFAULT_SHORTCUTS = (
+    ("YouTube", "https://www.youtube.com/", "▶", "yt"),
+    ("Discord", "https://discord.com/app", "◉", "discord"),
+    ("WhatsApp", "https://web.whatsapp.com/", "◉", "wa"),
+    ("Gmail", "https://mail.google.com/", "M", "gmail"),
+    ("Drive", "https://drive.google.com/", "▲", "drive"),
+)
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "assets"
 VPN_LINKS = {"Mullvad VPN": "https://mullvad.net/", "NordVPN": "https://nordvpn.com/"}
 # Existing profiles from PrivatBrowser 0.1–0.8 remain on the same computer.
@@ -65,6 +72,7 @@ DATA = profile_directory()
 SETTINGS = DATA / "settings.json"
 BOOKMARKS = DATA / "bookmarks.json"
 PINNED = DATA / "pinned.json"
+HIDDEN_SHORTCUTS = DATA / "hidden_shortcuts.json"
 HISTORY = DATA / "history.json"
 FILTERS = DATA / "filterliste.txt"
 DOWNLOADS = DATA / "Downloads"
@@ -215,7 +223,7 @@ class BrowserPage(QWebEnginePage):
             elif action == "unpin":
                 try:
                     index = int(url.path().strip("/"))
-                    QTimer.singleShot(0, lambda n=index: self.window.unpin_home_bookmark(n))
+                    QTimer.singleShot(0, lambda n=index: self.window.remove_home_shortcut(n))
                 except (ValueError, IndexError):
                     pass
             elif action == "downloads":
@@ -369,11 +377,14 @@ class Browser(QMainWindow):
             self.setWindowIcon(QIcon(str(icon)))
         self.bookmarks = read_json(BOOKMARKS, [])
         self.pinned = read_json(PINNED, [])
+        self.hidden_shortcuts = read_json(HIDDEN_SHORTCUTS, [])
         self.history = read_json(HISTORY, [])
         if not isinstance(self.bookmarks, list):
             self.bookmarks = []
         if not isinstance(self.pinned, list):
             self.pinned = []
+        if not isinstance(self.hidden_shortcuts, list):
+            self.hidden_shortcuts = []
         if not isinstance(self.history, list):
             self.history = []
         self.session_downloads = []
@@ -632,23 +643,42 @@ class Browser(QMainWindow):
             "Windows-Anwendungen der Anbieter sind separat zu installieren. "
             "Ein Windows-VPN kann auch andere Programme beeinflussen.")
 
+    def visible_home_shortcuts(self):
+        defaults = [(name, url, icon, style) for name, url, icon, style
+                    in DEFAULT_SHORTCUTS if url not in self.hidden_shortcuts]
+        default_urls = {item[1] for item in DEFAULT_SHORTCUTS}
+        custom = []
+        for url in self.pinned:
+            if url in default_urls:
+                continue
+            bookmark = next((b for b in self.bookmarks if b.get("url") == url), None)
+            if bookmark:
+                custom.append((bookmark.get("title", "Lesezeichen"), url, "☆", ""))
+        return defaults + custom
+
     def start_page_html(self):
         content = (ASSETS / "startseite.html").read_text(encoding="utf-8")
         cards = []
-        for index, url in enumerate(self.pinned):
-            entry = next((b for b in self.bookmarks if b.get("url") == url), None)
-            if not entry:
-                continue
+        for index, (name, url, icon, style) in enumerate(self.visible_home_shortcuts()):
             safe_url = html.escape(url, quote=True)
-            safe_title = html.escape(entry.get("title", "Lesezeichen"), quote=True)
+            safe_title = html.escape(name, quote=True)
+            safe_icon = html.escape(icon)
+            safe_class = html.escape(style, quote=True)
             cards.append(
                 '<div class="pinned-tile"><a class="tile" href="' + safe_url
-                + '"><span class="appicon">☆</span><strong>' + safe_title
-                + '</strong></a><a class="pin-remove" title="Nur von der Startseite entfernen" '
+                + '"><span class="appicon ' + safe_class + '">' + safe_icon
+                + '</span><strong>' + safe_title
+                + '</strong></a><a class="pin-remove" title="Von Startseite entfernen" '
                 + 'href="vaultie://unpin/' + str(index) + '">×</a></div>')
-        content = content.replace(
-            '<div class="shortcutgrid">',
-            '<div class="shortcutgrid">' + "".join(cards), 1)
+        cards.append('<a class="tile" href="vaultie://bookmarks">'
+                     '<span class="appicon add">＋</span><strong>Lesezeichen</strong></a>')
+        content, separator, after_grid = content.partition('<div class="shortcutgrid">')
+        if not separator:
+            return content
+        _, separator, tail = after_grid.partition('</div>\n<div class="panel">')
+        if not separator:
+            return content + '<div class="shortcutgrid">' + after_grid
+        content += '<div class="shortcutgrid">' + "".join(cards) + '</div>\n<div class="panel">' + tail
         content = content.replace(
             '<div class="panel">',
             '<style>.pinned-tile{position:relative;min-width:0}'
@@ -756,7 +786,7 @@ class Browser(QMainWindow):
         dialog.setWindowTitle("Lesezeichen auf der Startseite auswählen")
         dialog.resize(600, 450)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Lesezeichen auswählen. Die Auswahl bleibt nur lokal gespeichert."))
+        layout.addWidget(QLabel("Schnellwahl auswählen: auch die fünf Standard-Kacheln sind entfernbar und wiederherstellbar."))
         search = QLineEdit(dialog)
         search.setPlaceholderText("Lesezeichen suchen")
         layout.addWidget(search)
@@ -764,9 +794,15 @@ class Browser(QMainWindow):
         items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         layout.addWidget(items)
         from PySide6.QtWidgets import QListWidgetItem
+        default_urls = {url for _name, url, _icon, _style in DEFAULT_SHORTCUTS}
+        for name, url, _icon, _style in DEFAULT_SHORTCUTS:
+            item = QListWidgetItem("Standard: " + name + " — " + url)
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            items.addItem(item)
+            item.setSelected(url not in self.hidden_shortcuts)
         for bookmark in self.bookmarks:
             url = bookmark.get("url", "")
-            if urlsplit(url).scheme not in ("https", "http"):
+            if urlsplit(url).scheme not in ("https", "http") or url in default_urls:
                 continue
             item = QListWidgetItem(bookmark.get("title", url) + " — " + url)
             item.setData(Qt.ItemDataRole.UserRole, url)
@@ -790,16 +826,30 @@ class Browser(QMainWindow):
         dialog.exec()
 
     def save_pinned(self, urls):
+        selected = set(urls)
+        default_urls = {url for _name, url, _icon, _style in DEFAULT_SHORTCUTS}
         allowed = {item.get("url") for item in self.bookmarks}
-        self.pinned = list(dict.fromkeys(u for u in urls if u in allowed))
+        self.hidden_shortcuts = [url for url in default_urls if url not in selected]
+        self.pinned = list(dict.fromkeys(
+            url for url in urls if url in allowed and url not in default_urls))
+        write_json(HIDDEN_SHORTCUTS, self.hidden_shortcuts)
         write_json(PINNED, self.pinned)
         self.refresh_home_if_visible()
 
-    def unpin_home_bookmark(self, index):
-        if 0 <= index < len(self.pinned):
-            self.pinned.pop(index)
+    def remove_home_shortcut(self, index):
+        shortcuts = self.visible_home_shortcuts()
+        if not 0 <= index < len(shortcuts):
+            return
+        url = shortcuts[index][1]
+        default_urls = {entry[1] for entry in DEFAULT_SHORTCUTS}
+        if url in default_urls:
+            if url not in self.hidden_shortcuts:
+                self.hidden_shortcuts.append(url)
+                write_json(HIDDEN_SHORTCUTS, self.hidden_shortcuts)
+        else:
+            self.pinned = [entry for entry in self.pinned if entry != url]
             write_json(PINNED, self.pinned)
-            self.refresh_home_if_visible()
+        self.refresh_home_if_visible()
 
     def show_bookmarks(self):
         dialog = QDialog(self)
