@@ -8,6 +8,7 @@ let view = null;
 let uiReady = false;
 let widevineStatus = 'Ungeprüft';
 let navigationError = '';
+let diagnosticPanelOpen = false;
 
 function validUrl(raw) {
   try {
@@ -30,7 +31,8 @@ function sendStatus() {
 function setBounds() {
   if (!win || !view || win.isDestroyed()) return;
   const [w, h] = win.getContentSize();
-  view.setBounds({ x: 0, y: 92, width: Math.max(w, 1), height: Math.max(h - 92, 1) });
+  const y = diagnosticPanelOpen ? 380 : 92;
+  view.setBounds({ x: 0, y, width: Math.max(w, 1), height: Math.max(h - y, 1) });
 }
 function navigate(input) {
   let url = validUrl(input);
@@ -110,6 +112,7 @@ ipcMain.handle('vaultie:command', async (event, cmd, arg) => {
     case 'forward': if (view.webContents.canGoForward()) view.webContents.goForward(); break;
     case 'reload': view.webContents.reload(); break;
     case 'home': navigate(START_PAGE); break;
+    case 'panel': diagnosticPanelOpen = arg === true; setBounds(); break;
     case 'drm': {
       let timer;
       try {
