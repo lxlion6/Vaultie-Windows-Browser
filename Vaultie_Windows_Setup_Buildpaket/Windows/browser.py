@@ -28,7 +28,7 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
 DEFAULT_SHORTCUTS = (
