@@ -4,6 +4,7 @@ import html
 from datetime import datetime
 import os
 import re
+import secrets
 import shutil
 import sys
 from functools import partial
@@ -12,19 +13,23 @@ from pathlib import Path
 from urllib.parse import quote_plus, urlsplit, urlunsplit, parse_qsl, urlencode
 
 from PySide6.QtCore import QStandardPaths, Qt, QUrl, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QDesktopServices
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QMenu, QMessageBox, QPushButton, QListWidget, QTabBar, QStackedWidget, QToolBar, QToolButton, QSlider, QCheckBox,
     QVBoxLayout, QWidget, QSizePolicy, QStyle)
 from PySide6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEnginePage,
-    QWebEngineProfile, QWebEngineSettings, QWebEngineUrlRequestInterceptor)
+    QWebEngineProfile, QWebEngineSettings, QWebEngineUrlRequestInterceptor,
+    QWebEngineScript)
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from bandwidth_proxy import LocalBandwidthProxy
 from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
+APP_VERSION = "2.9"
+RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
 DEFAULT_SHORTCUTS = (
     ("YouTube", "https://www.youtube.com/", "▶", "yt"),
@@ -404,6 +409,23 @@ class Browser(QMainWindow):
             self.vault = CredentialVault(CREDENTIALS)
         except (OSError, ValueError, KeyError, UnicodeDecodeError) as exc:
             self.vault_error = str(exc)
+        # Document-start privacy protection without a background process.
+        fingerprint_source = ASSETS / "fingerprint.js"
+        if fingerprint_source.is_file():
+            privacy_script = QWebEngineScript()
+            privacy_script.setName("Vaultie Fingerprinting-Schutz")
+            privacy_script.setInjectionPoint(
+                QWebEngineScript.InjectionPoint.DocumentCreation)
+            privacy_script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+            privacy_script.setRunsOnSubFrames(True)
+            privacy_script.setSourceCode(
+                fingerprint_source.read_text(encoding="utf-8").replace(
+                    "VAULTIE_SESSION_SEED", secrets.token_hex(16)))
+            self.profile.scripts().insert(privacy_script)
+        # The update request uses the existing asynchronous Qt event loop.
+        self.update_network = QNetworkAccessManager(self)
+        self.update_checked = False
+        QTimer.singleShot(12000, self.check_for_updates)
         self.cookie_filter = lambda request: (
             not self.config.get("block_third_party_cookies", True)
             or not request.thirdParty)
@@ -437,6 +459,55 @@ class Browser(QMainWindow):
         self.apply_design()
         self.add_tab(HOME)
         self.statusBar().showMessage("Vaultie · Zugangsdaten auf Wunsch lokal verschlüsselt · Keine Cloud-Synchronisierung")
+
+    def check_for_updates_manual(self):
+        self.update_checked = False
+        self.check_for_updates()
+
+    def check_for_updates(self):
+        """One background-free, asynchronous release check per launch."""
+        if self.update_checked:
+            return
+        self.update_checked = True
+        request = QNetworkRequest(QUrl(RELEASE_API))
+        request.setRawHeader(b"User-Agent", b"Vaultie-Windows-UpdateCheck")
+        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setTransferTimeout(8000)
+        reply = self.update_network.get(request)
+        reply.finished.connect(lambda r=reply: self.process_update_response(r))
+
+    def process_update_response(self, reply):
+        try:
+            if reply.error() != reply.NetworkError.NoError:
+                return
+            payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
+            info = re.search(r"Version:\s*(\d+\.\d+(?:\.\d+)?)",
+                             payload.get("body", ""))
+            if not info:
+                return
+            found = tuple(int(n) for n in info.group(1).split("."))
+            current = tuple(int(n) for n in APP_VERSION.split("."))
+            if found <= current:
+                return
+            installer = next((a.get("browser_download_url") for a in
+                              payload.get("assets", [])
+                              if a.get("name") == "Vaultie-Setup.exe"), None)
+            if not installer or not installer.startswith(
+                    "https://github.com/lxlion6/Vaultie-Windows-Browser/releases/"):
+                return
+            decision = QMessageBox.question(
+                self, "Vaultie-Update verfügbar",
+                f"Vaultie {info.group(1)} ist verfügbar (installiert: {APP_VERSION}).\n"
+                "Den neuen Installer von GitHub herunterladen?\n\n"
+                "Da der Installer noch unsigniert ist, wird er nicht "
+                "automatisch ausgeführt.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if decision == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(installer))
+        except (ValueError, TypeError, AttributeError):
+            return
+        finally:
+            reply.deleteLater()
 
     def connection_status(self):
         return "Verlauf ausschließlich lokal gespeichert"
@@ -531,6 +602,7 @@ class Browser(QMainWindow):
         menu.addAction("Login dieser Website speichern", self.save_login_from_page)
         menu.addAction("Gespeichertes Login jetzt ausfüllen", self.fill_current_login)
         menu.addAction("Gespeicherte Logins verwalten", self.show_saved_logins)
+        menu.addAction("Auf Updates prüfen", self.check_for_updates_manual)
         menu.addAction("Downloads anzeigen", self.show_downloads)
         menu.addAction("Lokalen Speicher prüfen / bereinigen", self.show_storage_status)
         menu.addAction("Bandbreitenlimit (3-25 Mbit/s)", self.show_bandwidth_dialog)
