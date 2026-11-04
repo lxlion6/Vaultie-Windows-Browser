@@ -28,7 +28,7 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
 DEFAULT_SHORTCUTS = (
@@ -136,7 +136,8 @@ def configuration():
               "strip_tracking_params": True,
               "bandwidth_enabled": False, "bandwidth_mbps": 10,
               "clear_history_on_exit": False,
-              "private_session": True, **saved}
+              "private_session": True,
+              "remember_website_sessions": False, **saved}
     # Login details live in a small encrypted file, not persistent site storage.
     config["private_session"] = True
     config["bandwidth_enabled"] = bool(config.get("bandwidth_enabled", False))
@@ -152,13 +153,7 @@ def configuration():
         for key in obsolete:
             config.pop(key, None)
         write_json(SETTINGS, config)
-    # Remove website data left by the intermediate persistent-profile build.
-    old_site_data = DATA / "website-profile"
-    if old_site_data.is_dir() and not old_site_data.is_symlink():
-        try:
-            shutil.rmtree(old_site_data)
-        except OSError:
-            pass
+    # Never silently erase user website data or previously stored sessions.
     return config
 
 
@@ -417,10 +412,20 @@ class Browser(QMainWindow):
         # Off-the-record Qt WebEngine: cookies, HTTP cache, website storage
         # and browser-side login sessions are discarded on exit.
         # Only passwords the user explicitly saves are encrypted on disk.
-        self.profile = QWebEngineProfile(self)
+        if self.config.get("remember_website_sessions", False):
+            # Explicit opt-in: Chromium needs a disk-backed profile to restore
+            # authentication cookies after the app closes.
+            self.profile = QWebEngineProfile("VaultieSessions", self)
+            session_dir = DATA / "website-sessions"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            self.profile.setPersistentStoragePath(str(session_dir))
+            self.profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
+        else:
+            self.profile = QWebEngineProfile(self)
+            self.profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
         self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
-        self.profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
         self.profile.setPersistentPermissionsPolicy(
             QWebEngineProfile.PersistentPermissionsPolicy.StoreInMemory)
         self.vault = None
@@ -446,9 +451,22 @@ class Browser(QMainWindow):
         self.update_network = QNetworkAccessManager(self)
         self.update_checked = False
         QTimer.singleShot(12000, self.check_for_updates)
-        self.cookie_filter = lambda request: (
-            not self.config.get("block_third_party_cookies", True)
-            or not request.thirdParty)
+        # Prime Video signs in across Amazon domains. Third-party auth
+        # cookies for trusted Amazon domains must be allowed in its context.
+        def allow_cookie(request):
+            if not self.config.get("block_third_party_cookies", True):
+                return True
+            if not request.thirdParty:
+                return True
+            first = request.firstPartyUrl.host().lower()
+            site = request.origin.host().lower()
+            def amazon_domain(host):
+                return (host == "primevideo.com" or host.endswith(".primevideo.com")
+                        or host == "amazon.com" or host.endswith(".amazon.com")
+                        or host == "amazon.de" or host.endswith(".amazon.de")
+                        or host == "amazon.co.uk" or host.endswith(".amazon.co.uk"))
+            return amazon_domain(first) and amazon_domain(site)
+        self.cookie_filter = allow_cookie
         self.profile.cookieStore().setCookieFilter(self.cookie_filter)
         privacy = self.profile.settings()
         attributes = QWebEngineSettings.WebAttribute
@@ -637,6 +655,7 @@ class Browser(QMainWindow):
         menu.addAction("Trackingschutz-Bericht", self.show_tracking_report)
         menu.addAction("Filterliste importieren", self.import_filters)
         menu.addAction("Drittanbieter-Cookies umschalten", self.toggle_third_party_cookies)
+        menu.addAction("Angemeldet bleiben nach Neustart (optional)", self.toggle_session_persistence)
         menu.addAction("Cookies und Cache löschen", self.clear_site_data)
         menu.addAction("Lokalen Verlauf anzeigen", self.show_history_policy)
         menu.addAction("Lokalen Datenordner anzeigen", self.show_data_folder)
@@ -1552,6 +1571,27 @@ class Browser(QMainWindow):
         state = "aktiv" if self.blocker.enabled else "inaktiv"
         QMessageBox.information(self, "Werbeblocker", f"Werbeblocker {state}. Neue Seitenanfragen verwenden die Einstellung.")
 
+    def toggle_session_persistence(self):
+        enabled = not self.config.get("remember_website_sessions", False)
+        if enabled:
+            if QMessageBox.question(
+                    self, "Website-Sitzungen behalten",
+                    "Anmeldungen sollen auch nach dem Schließen von Vaultie erhalten "
+                    "bleiben. Dafür muss Vaultie Website-Cookies und technische "
+                    "Sitzungsdaten lokal auf diesem Computer speichern.\\n\\n"
+                    "Der verschlüsselte Passwortspeicher bleibt unabhängig davon. "
+                    "Möchtest du die dauerhafte Speicherung einschalten?"
+                    ) != QMessageBox.StandardButton.Yes:
+                return
+        self.config["remember_website_sessions"] = enabled
+        write_json(SETTINGS, self.config)
+        QMessageBox.information(
+            self, "Website-Sitzungen",
+            ("Website-Sitzungen bleiben nach dem Neustart gespeichert."
+             if enabled else
+             "Website-Sitzungen werden künftig beim Beenden verworfen.")
+            + "\\nBitte Vaultie vollständig schließen und neu starten.")
+
     def toggle_third_party_cookies(self):
         enabled = not self.config.get("block_third_party_cookies", True)
         self.config["block_third_party_cookies"] = enabled
@@ -1700,8 +1740,9 @@ class Browser(QMainWindow):
             "Ein separat eingeschaltetes Windows-VPN kann trotzdem den Browser betreffen.\n\n"
             "Lesezeichen und Verlauf bleiben lokal. Nur ausdrücklich gespeicherte "
             "Logins werden mit Windows DPAPI verschlüsselt und nicht synchronisiert. "
-            "Cookies, HTTP-Cache und Website-Sitzungen bleiben nur im Arbeitsspeicher. "
-            "Websites können eine erneute Anmeldung verlangen.\\n\\n"
+            "Website-Sitzungen bleiben standardmäßig nur während des Betriebs bestehen. "
+            "Optional können Cookies und Sitzungsdaten lokal dauerhaft gespeichert "
+            "werden, damit Anmeldungen nach einem Neustart erhalten bleiben.\\n\\n"
             "Der Werbeblocker nutzt einfache Domainfilter. Dies ist keine unabhaengig "
             "sicherheitsgepruefte Browser-Version. Websites erhalten weiterhin "
             "technisch erforderliche Anfragen und von dir eingegebene Daten.")
