@@ -210,7 +210,8 @@ class BrowserPage(QWebEnginePage):
                 self.window.choose_home_bookmarks()
             elif action == "unpin":
                 try:
-                    self.window.unpin_home_bookmark(int(url.path().strip("/")))
+                    index = int(url.path().strip("/"))
+                    QTimer.singleShot(0, lambda n=index: self.window.unpin_home_bookmark(n))
                 except (ValueError, IndexError):
                     pass
             elif action == "downloads":
