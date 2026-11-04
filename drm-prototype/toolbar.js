@@ -9,22 +9,22 @@ $('diagnostics-close').addEventListener('click', () => $('diagnostics').close())
 $('diagnose').addEventListener('click', async () => {
   const dlg = $('diagnostics');
   const result = $('diagnostics-result');
-  result.textContent = 'Prüfe H.264, AAC und Widevine.\\nDie Abfrage wird nach spätestens 15 Sekunden beendet.';
+  result.textContent = 'Prüfe H.264, AAC und Widevine.\nDie Abfrage wird nach spätestens 15 Sekunden beendet.';
   if (!dlg.open) dlg.showModal();
   $('diagnose').disabled = true;
   try {
     const report = await window.vaultie.command('drm');
     if (!report) throw new Error('Keine Antwort von der Browser-Engine.');
     if (report.error) {
-      result.textContent = 'Prüfung nicht abgeschlossen:\\n' + report.error;
+      result.textContent = 'Prüfung nicht abgeschlossen:\n' + report.error;
     } else {
       result.textContent = 'H.264: ' + (report.h264 || 'nicht verfügbar') +
-        '\\nAAC: ' + (report.aac || 'nicht verfügbar') +
-        '\\nWidevine: ' + (report.widevine || 'nicht verfügbar') +
-        '\\n\\nHinweis: Eine positive Prüfung garantiert nicht, dass Prime Video Filme abspielt.';
+        '\nAAC: ' + (report.aac || 'nicht verfügbar') +
+        '\nWidevine: ' + (report.widevine || 'nicht verfügbar') +
+        '\n\nHinweis: Eine positive Prüfung garantiert nicht, dass Prime Video Filme abspielt.';
     }
   } catch (err) {
-    result.textContent = 'Prüfung fehlgeschlagen:\\n' + String(err?.message || err);
+    result.textContent = 'Prüfung fehlgeschlagen:\n' + String(err?.message || err);
   } finally {
     $('diagnose').disabled = false;
   }
