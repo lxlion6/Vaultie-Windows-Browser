@@ -110,7 +110,21 @@ ipcMain.handle('vaultie:command', async (event, cmd, arg) => {
     case 'forward': if (view.webContents.canGoForward()) view.webContents.goForward(); break;
     case 'reload': view.webContents.reload(); break;
     case 'home': navigate(START_PAGE); break;
-    case 'drm': return await checkDrm();
+    case 'drm': {
+      let timer;
+      try {
+        return await Promise.race([
+          checkDrm(),
+          new Promise(resolve => {
+            timer = setTimeout(() => resolve({ error: 'Zeitlimit nach 15 Sekunden. Widevine oder die Webseite antwortet nicht.' }), 15000);
+          })
+        ]);
+      } catch (err) {
+        return { error: String(err?.message || err) };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
     case 'vmp': await shell.openExternal('https://github.com/castlabs/electron-releases/wiki/vmp'); break;
     default: return null;
   }
