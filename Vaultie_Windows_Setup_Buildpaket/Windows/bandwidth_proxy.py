@@ -81,6 +81,13 @@ class _Handler(socketserver.BaseRequestHandler):
                 first = (method + " " + relative + " " + version).encode("ascii")
                 filtered = [line for line in lines[1:]
                             if not line.lower().startswith(b"proxy-connection:")]
+                upgrade = any(line.lower().startswith(b"upgrade:") for line in filtered)
+                if not upgrade:
+                    # A single upstream socket must not be reused for different
+                    # proxy destinations on persistent HTTP/1.1 connections.
+                    filtered = [line for line in filtered
+                                if not line.lower().startswith(b"connection:")]
+                    filtered.append(b"Connection: close")
                 outgoing = b"\r\n".join([first, *filtered]) + b"\r\n\r\n" + body
             if not (1 <= port <= 65535):
                 raise ValueError("Port")
