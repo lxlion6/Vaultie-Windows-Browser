@@ -502,8 +502,8 @@ class Browser(QMainWindow):
         folder = self.toolbar_button(bar, "★", self.show_bookmarks, "Lesezeichen-Ordner öffnen und verwalten")
         folder.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
         folder.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.toolbar_button(bar, "🔑", self.save_login_from_page,
-            "Login speichern – Zugangsdaten aus Formular übernehmen oder eingeben")
+        self.toolbar_button(bar, "🔑", self.show_login_actions,
+            "Zugangsdaten: speichern, ausfüllen oder verwalten")
         self.adblock_button = self.toolbar_button(bar, "◆  Schutz aktiv", self.toggle_blocker,
             "Werbeblocker ein- oder ausschalten", "adblockState")
         self.refresh_blocker_status()
@@ -529,6 +529,7 @@ class Browser(QMainWindow):
         menu = QMenu(self)
         menu.addAction("Lesezeichen verwalten", self.show_bookmarks)
         menu.addAction("Login dieser Website speichern", self.save_login_from_page)
+        menu.addAction("Gespeichertes Login jetzt ausfüllen", self.fill_current_login)
         menu.addAction("Gespeicherte Logins verwalten", self.show_saved_logins)
         menu.addAction("Downloads anzeigen", self.show_downloads)
         menu.addAction("Lokalen Speicher prüfen / bereinigen", self.show_storage_status)
@@ -709,7 +710,7 @@ class Browser(QMainWindow):
         view.setPage(page)
         view.titleChanged.connect(lambda title, v=view: self.set_tab_title(v, title))
         view.loadFinished.connect(lambda ok, v=view: self.record_history(v) if ok else None)
-        view.loadFinished.connect(lambda ok, v=view: self.autofill_login(v) if ok else None)
+        view.loadFinished.connect(lambda ok, v=view: self.schedule_login_fill(v) if ok else None)
         view.urlChanged.connect(lambda _url, v=view: self.update_address(v))
         view.loadProgress.connect(lambda n: self.statusBar().showMessage(f"Lade {n} %" if n < 100 else self.connection_status()))
         idx = self.tabs.addTab(view, "Neuer Tab")
@@ -768,43 +769,103 @@ class Browser(QMainWindow):
         if self.tabs.count() == 0:
             self.add_tab(HOME)
 
-    def autofill_login(self, view):
-        """Fill only HTTPS main-frame login fields; never send data over network."""
+    def schedule_login_fill(self, view):
+        """Retry briefly because many sites build their login forms after loadFinished."""
         if not self.vault:
+            return
+        url = view.url().toString()
+        origin = secure_origin(url)
+        if not origin or not self.vault.get(origin):
+            return
+        # At most three attempts for one navigation; no background polling.
+        for delay in (100, 750, 1800):
+            QTimer.singleShot(delay, lambda v=view, expected=url:
+                self.autofill_login(v) if v.url().toString() == expected else None)
+
+    def autofill_login(self, view, manual=False):
+        """Fill the saved credential on its exact HTTPS origin, not subframes."""
+        if not self.vault:
+            if manual:
+                QMessageBox.warning(self, "Zugangsdaten",
+                                    self.vault_error or "Passwortspeicher nicht verfügbar.")
             return
         origin = secure_origin(view.url().toString())
         if not origin:
+            if manual:
+                QMessageBox.information(self, "Login ausfüllen",
+                                        "Bitte die sichere HTTPS-Anmeldeseite öffnen.")
             return
         saved = self.vault.get(origin)
         if not saved:
+            if manual:
+                QMessageBox.information(self, "Login ausfüllen",
+                    "Für diese Webadresse ist kein Login gespeichert.\\n"
+                    "Möglicherweise verwendet die Webseite eine andere Login-Domain.")
             return
-        payload = json.dumps(saved, ensure_ascii=False)
-        # Avoid persistent JavaScript polling or injecting into third-party frames.
+        payload = json.dumps(saved, ensure_ascii=True)
         script = """
         (() => {
-          if (window.top !== window.self) return;
+          if (window.top !== window.self) return "frame";
           const item = PAYLOAD;
-          const password = document.querySelector('input[type="password"]:not([disabled])');
-          if (!password || password.value) return;
-          const form = password.form || document;
-          const usernames = Array.from(form.querySelectorAll(
-            'input[autocomplete="username"],input[type="email"],input[type="text"]'
-          )).filter(x => !x.disabled && !x.readOnly);
-          const username = usernames.find(x => x.autocomplete === "username") ||
-                           usernames.find(x => x.type === "email") || usernames[0];
+          const fields = Array.from(document.querySelectorAll('input'));
+          const password = fields.find(x => x.type === "password" &&
+                                             !x.disabled && !x.readOnly);
+          const username = fields.find(x => x.autocomplete === "username" &&
+                                             !x.disabled && !x.readOnly) ||
+                           fields.find(x => x.type === "email" && !x.disabled &&
+                                             !x.readOnly) ||
+                           fields.find(x => x.type === "text" && !x.disabled &&
+                                             !x.readOnly && x.name &&
+                                             /user|login|email/i.test(x.name));
           function fill(field, value) {
-            if (!field || field.value) return;
+            if (!field || field.value) return false;
             const setter = Object.getOwnPropertyDescriptor(
               HTMLInputElement.prototype, "value").set;
             setter.call(field, value);
             field.dispatchEvent(new Event("input", {bubbles:true}));
             field.dispatchEvent(new Event("change", {bubbles:true}));
+            return true;
           }
-          if (username) fill(username, item.username);
-          fill(password, item.password);
+          if (!username && !password) return "missing";
+          let changed = false;
+          if (username) changed = fill(username, item.username) || changed;
+          if (password) changed = fill(password, item.password) || changed;
+          return changed ? "filled" : "existing";
         })();
         """.replace("PAYLOAD", payload)
-        view.page().runJavaScript(script)
+        page = view.page()
+        if manual:
+            page.runJavaScript(script, lambda result: self.show_autofill_result(result))
+        else:
+            page.runJavaScript(script)
+
+    def fill_current_login(self):
+        view = self.current()
+        if view:
+            self.autofill_login(view, manual=True)
+
+    def show_autofill_result(self, result):
+        if result == "filled":
+            self.statusBar().showMessage("Login-Felder ausgefüllt", 4000)
+        elif result == "existing":
+            QMessageBox.information(self, "Login ausfüllen",
+                "Die vorhandenen Felder sind bereits ausgefüllt. "
+                "Vaultie überschreibt eingegebene Daten nicht.")
+        else:
+            QMessageBox.information(self, "Login ausfüllen",
+                "Auf dieser Seite wurden keine passenden Login-Felder gefunden. "
+                "Öffne zuerst das Anmeldeformular der Webseite.")
+
+    def show_login_actions(self):
+        menu = QMenu(self)
+        menu.addAction("Gespeichertes Login ausfüllen", self.fill_current_login)
+        menu.addAction("Login speichern", self.save_login_from_page)
+        menu.addAction("Gespeicherte Logins verwalten", self.show_saved_logins)
+        button = self.sender()
+        if isinstance(button, QToolButton):
+            menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+        else:
+            menu.exec()
 
     def save_login_from_page(self):
         """Always offer a visible way to store a login, including after signing in.
