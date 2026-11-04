@@ -26,6 +26,12 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      - name: Lokalen Bandbreitenbegrenzer testen
+        shell: pwsh
+        run: |
+          python -m py_compile browser.py bandwidth_proxy.py
+          python -m unittest -v test_bandwidth_proxy
+          if ($LASTEXITCODE -ne 0) { throw 'Bandbreitenbegrenzer-Test fehlgeschlagen' }
       - name: Bibliotheken installieren
         shell: pwsh
         run: |
