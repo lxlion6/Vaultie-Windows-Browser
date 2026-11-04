@@ -26,7 +26,10 @@ VPN_LINKS = {"Mullvad VPN": "https://mullvad.net/", "NordVPN": "https://nordvpn.
 # Windows AppData paths can depend on the application name, so look for the
 # old profile before choosing the new stable local location.
 def profile_directory():
+    """Store Vaultie data in LocalAppData, not Windows Roaming or OneDrive."""
     local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    target = local / "Vaultie"
+    target.mkdir(parents=True, exist_ok=True)
     roaming = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
     candidates = [
         roaming / "PrivatBrowser" / "PrivatBrowser",
@@ -36,17 +39,29 @@ def profile_directory():
         local / "PrivatBrowser",
         local / "browser" / "PrivatBrowser",
     ]
-    for candidate in candidates:
-        if (candidate / "settings.json").exists() or (candidate / "bookmarks.json").exists():
-            return candidate
-    return local / "Vaultie"
+    # One-time migration of user-created files from previous Vaultie versions.
+    # Keep old files untouched rather than deleting potentially unique user data.
+    for filename in ("settings.json", "bookmarks.json", "filterliste.txt"):
+        destination = target / filename
+        if destination.exists():
+            continue
+        for old in candidates:
+            source = old / filename
+            if source.is_file():
+                try:
+                    shutil.copy2(source, destination)
+                    break
+                except OSError:
+                    continue
+    return target
+
 
 DATA = profile_directory()
-DATA.mkdir(parents=True, exist_ok=True)
 SETTINGS = DATA / "settings.json"
 BOOKMARKS = DATA / "bookmarks.json"
 FILTERS = DATA / "filterliste.txt"
-
+DOWNLOADS = DATA / "Downloads"
+DOWNLOADS.mkdir(parents=True, exist_ok=True)
 
 def read_json(path, default):
     try:
@@ -691,14 +706,18 @@ class Browser(QMainWindow):
             "technisch erforderliche Anfragen und von dir eingegebene Daten.")
 
     def download_requested(self, item: QWebEngineDownloadRequest):
-        folder = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
-        suggested = item.downloadFileName() or "download"
-        path, _ = QFileDialog.getSaveFileName(self, "Download speichern", str(Path(folder) / suggested))
-        if not path:
-            item.cancel()
-            return
-        output = Path(path)
-        item.setDownloadDirectory(str(output.parent))
+        # Never choose a synchronized cloud folder as the default.
+        # Every Vaultie-managed download stays under LocalAppData/Vaultie.
+        suggested = Path(item.downloadFileName() or "download").name
+        if not suggested or suggested in (".", ".."):
+            suggested = "download"
+        output = DOWNLOADS / suggested
+        stem, suffix = output.stem, output.suffix
+        counter = 1
+        while output.exists():
+            output = DOWNLOADS / f"{stem}-{counter}{suffix}"
+            counter += 1
+        item.setDownloadDirectory(str(DOWNLOADS))
         item.setDownloadFileName(output.name)
         item.accept()
         self.session_downloads.append(str(output))
