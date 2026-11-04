@@ -268,7 +268,7 @@ internal sealed class VaultieWindow : Form
         foreach (var url in bookmarks) {
             var title = new Uri(url).Host + " – " + url;
             menu.Items.Add(title.Length > 95 ? title[..95] : title,
-                null, (_, _) => _ = AddTab(url));
+                null, (sender, evt) => { _ = AddTab(url); });
         }
         if (bookmarks.Count == 0) menu.Items.Add("Noch keine Lesezeichen");
         menu.Show(this, new Point(165, 44));
@@ -325,7 +325,7 @@ internal sealed class VaultieWindow : Form
     private void ShowMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Neuer Tab", null, (_, _) => _ = AddTab(Program.Home));
+        menu.Items.Add("Neuer Tab", null, (sender, evt) => { _ = AddTab(Program.Home); });
         menu.Items.Add("Tab schließen", null, (_, _) => {
             if (tabs.SelectedTab != null) CloseTab(tabs.SelectedTab);
         });
@@ -334,8 +334,9 @@ internal sealed class VaultieWindow : Form
         menu.Items.Add("WebView2-Version", null, (_, _) => MessageBox.Show(this,
             environment?.BrowserVersionString ?? "nicht initialisiert",
             "Vaultie – Browser-Engine"));
-        menu.Items.Add("Auf Updates prüfen", null, (_, _) =>
-            _ = AddTab("https://github.com/lxlion6/Vaultie-Windows-Browser/releases/tag/windows-latest"));
+        menu.Items.Add("Auf Updates prüfen", null, (sender, evt) => {
+            _ = AddTab("https://github.com/lxlion6/Vaultie-Windows-Browser/releases/tag/windows-latest");
+        });
         menu.Items.Add("Datenschutz", null, (_, _) => MessageBox.Show(this,
             "WebView2 verwendet ein lokales Browserprofil unter %LOCALAPPDATA%\\Vaultie. " +
             "Cookies und Anmeldungen werden auf dem Computer gespeichert. " +
