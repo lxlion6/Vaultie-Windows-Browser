@@ -6,10 +6,17 @@ function go() { run('navigate', $('address').value); }
 $('go').addEventListener('click', go);
 $('address').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
 $('diagnostics-close').addEventListener('click', () => $('diagnostics').close());
+$('diagnostics').addEventListener('close', () => { void run('panel', false); });
 $('diagnose').addEventListener('click', async () => {
   const dlg = $('diagnostics');
   const result = $('diagnostics-result');
   result.textContent = 'Prüfe H.264, AAC und Widevine.\nDie Abfrage wird nach spätestens 15 Sekunden beendet.';
+  try {
+    await window.vaultie.command('panel', true);
+  } catch (err) {
+    $('status').textContent = 'Diagnosefenster konnte nicht vorbereitet werden: ' + String(err?.message || err);
+    return;
+  }
   if (!dlg.open) dlg.showModal();
   $('diagnose').disabled = true;
   try {
