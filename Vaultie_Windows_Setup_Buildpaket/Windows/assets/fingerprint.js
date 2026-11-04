@@ -42,9 +42,11 @@
       data[pixel + (offset % 3)] ^= 1;
     }
   };
+  const originalRead = window.CanvasRenderingContext2D &&
+    CanvasRenderingContext2D.prototype.getImageData;
   if (window.CanvasRenderingContext2D) {
     const proto = CanvasRenderingContext2D.prototype;
-    const nativeImage = proto.getImageData;
+    const nativeImage = originalRead;
     if (nativeImage) proto.getImageData = function(...args) {
       const result = nativeImage.apply(this, args);
       try { pixelNoise(result.data, result.width, result.height); } catch (_) {}
@@ -65,7 +67,7 @@
           const context = clone.getContext("2d");
           // Browser-internal original read avoids double modification.
           context.drawImage(this, 0, 0);
-          const image = context.getImageData(0, 0, clone.width, clone.height);
+          const image = originalRead.call(context, 0, 0, clone.width, clone.height);
           pixelNoise(image.data, image.width, image.height);
           context.putImageData(image, 0, 0);
           return nativeURL.apply(clone, args);
