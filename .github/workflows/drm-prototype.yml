@@ -1,5 +1,10 @@
 name: Vaultie DRM Prototyp - Windows Testpaket
 on:
+  push:
+    branches: [prototype/castlabs-drm]
+    paths:
+      - 'drm-prototype/**'
+      - '.github/workflows/drm-prototype.yml'
   workflow_dispatch:
 permissions:
   contents: read
