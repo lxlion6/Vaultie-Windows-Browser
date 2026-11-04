@@ -23,7 +23,7 @@ jobs:
       - name: Install castLabs ECS (official release)
         shell: pwsh
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'castLabs Installation fehlgeschlagen' }
           # ECS exposes install.js but does not declare an automatic npm install script.
           # Run the bundled official downloader explicitly, then verify electron.exe.
@@ -42,6 +42,15 @@ jobs:
           if (Test-Path 'node_modules/electron/dist') { Get-ChildItem 'node_modules/electron/dist' | Select-Object -First 15 Name, Length }
           if (-not (Test-Path 'node_modules/electron/dist/electron.exe')) { throw 'ECS electron.exe fehlt' }
           Get-Item 'node_modules/electron/dist/electron.exe' | Select-Object FullName, Length
+      - name: Test browser functions
+        run: npm test
+      - name: Smoke-test actual Windows Electron runtime
+        shell: pwsh
+        run: |
+          $env:VAULTIE_SMOKE = '1'
+          $env:VAULTIE_TEST_USER_DATA = Join-Path $env:RUNNER_TEMP 'vaultie-smoke'
+          node node_modules/electron/cli.js .
+          if ($LASTEXITCODE -ne 0) { throw 'Windows-Browsertest fehlgeschlagen' }
       - name: Package Windows diagnostic prototype
         shell: pwsh
         run: |
@@ -53,6 +62,8 @@ jobs:
       - name: Upload internal test artifact (no public release)
         uses: actions/upload-artifact@v4
         with:
-          name: Vaultie-DRM-Prototyp-Windows
-          path: drm-prototype/output/
+          name: Vaultie-castLabs-Windows-v0.3.0
+          path: |
+            drm-prototype/output/*.exe
+            drm-prototype/output/*.blockmap
           if-no-files-found: error

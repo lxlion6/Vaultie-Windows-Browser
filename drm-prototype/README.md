@@ -1,35 +1,26 @@
-# Vaultie – isolierter Widevine-Prototyp (Windows x64)
+# Vaultie mit castLabs – Funktionsübernahme 0.3.0
 
-**Kein fertiger Browser und keine Änderung an Vaultie 4.2.** Dieser Prototyp dient ausschließlich dazu, Codecs, Widevine-CDM und VMP bei castLabs Electron for Content Security zu prüfen.
+Windows 11 x64; Node.js 22 für Entwicklung/Build. Engine unverändert: castLabs ECS `v44.9.3+wvcus`.
+Der bisherige DRM-Prototyp wurde von Florian mit Bild und Ton erfolgreich getestet. Diese Fassung ergänzt die bisherigen Vaultie-Funktionen; Details und Prüfgrenzen: [FUNKTIONSABGLEICH.md](FUNKTIONSABGLEICH.md).
 
-## Quelle und Grenzen
-- Offizieller ECS-Code: https://github.com/castlabs/electron-releases
-- Verwendet die veröffentlichte stabile Version `v44.9.3+wvcus` (Stand 4. November 2026).
-- ECS installiert die Widevine-CDM-Komponente beim ersten Programmstart über den Komponenten-Updater. Eine Internetverbindung ist erforderlich.
-- Die veröffentlichten ECS-Binaries sind nur für Entwicklungszwecke VMP-signiert. **Prime Video / Netflix können sie deshalb ablehnen.** Der produktive VMP-Signaturdienst EVS erfordert Registrierung: https://github.com/castlabs/electron-releases/wiki/EVS
-- Video/DRM-Prüfung zeigt nur Codec-/EME-Verfügbarkeit. **Sie ersetzt keinen echten Wiedergabetest**.
-- Keine Passwortmigration und kein Ersatz für den bestehenden Vaultie-Browser.
-- Ungeprüfte Streamingdienste und ungetestete UI dürfen nicht als funktionsfähig veröffentlicht werden.
+## Entwicklung
 
-## Durchführung
-Unter Windows 11 mit Node.js 22 oder neuer:
 ```powershell
-npm install
+npm ci
+node node_modules/electron/install.js
 npm run check
+npm test
 npm start
 ```
-Die Shaka-Demoseite öffnet sich. Dort kann DRM-Testmaterial abgespielt werden. Die Schaltfläche „Video/DRM prüfen“ testet H.264/AAC und den EME-Zugriff auf `com.widevine.alpha` im Kontext einer HTTPS-Seite.
 
-## Windows-Paket (nur interner Test)
+## Windows-Installer
+
 ```powershell
 npm run package
 ```
-Der Ausgabeordner liegt unter `output/win-unpacked` (genauer Name abhängig von Builder-Version und Plattform). **Nicht als Produktivinstaller veröffentlichen**.
 
-## Freigabekriterien
-1. H.264/AAC positiv im Diagnosefenster
-2. EME/Widevine-Zugang positiv
-3. Testclip läuft tatsächlich (Ton und Bild)
-4. VMP-Lab bestätigt den geeigneten Status: https://github.com/castlabs/electron-releases/wiki/vmp
-5. Erst dann Produktionssignierung/EVS und Prime-Video-Test
-6. Erst nach allen Tests wird über eine Integration in Vaultie entschieden
+Ausgabe: `output/Vaultie-castLabs-Setup-0.3.0.exe`. Der Installer legt die Verknüpfung **Vaultie Streaming** an. Die reguläre Qt-Version bleibt unverändert. GitHub Actions baut auf dem Entwicklungszweig ein herunterladbares Windows-Artefakt nach Tests.
+
+Website-Sitzungen sind standardmäßig flüchtig; dauerhafte Anmeldungen lassen sich in den Einstellungen einschalten (wirksam ab Neustart). Lesezeichen, Verlauf und ausdrücklich gespeicherte Logins bleiben lokal. Der alte Passwortspeicher lässt sich unter „Zugangsdaten“ über Dateiauswahl importieren. Es werden keine Passwörter automatisch importiert oder als Klartextdatei gespeichert.
+
+Quellen: https://github.com/castlabs/electron-releases und https://www.electronjs.org/docs/latest/api/session . ECS verwaltet die Widevine-Komponente wie im erfolgreichen Prototyp. Der VMP-/Dienstestatus kann weiterhin vom Streaminganbieter abhängen; ein Codec-/EME-Test ersetzt keinen realen Wiedergabetest in der integrierten Fassung.
