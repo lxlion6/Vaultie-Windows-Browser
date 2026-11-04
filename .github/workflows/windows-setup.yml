@@ -33,8 +33,8 @@ jobs:
       - name: Lokalen Bandbreitenbegrenzer testen
         shell: pwsh
         run: |
-          python -m py_compile browser.py bandwidth_proxy.py storage_manager.py
-          python -m unittest -v test_bandwidth_proxy test_storage_manager
+          python -m py_compile browser.py bandwidth_proxy.py storage_manager.py credentials.py
+          python -m unittest -v test_bandwidth_proxy test_storage_manager test_credentials
           if ($LASTEXITCODE -ne 0) { throw 'Bandbreitenbegrenzer-Test fehlgeschlagen' }
       - name: Bibliotheken installieren
         shell: pwsh
