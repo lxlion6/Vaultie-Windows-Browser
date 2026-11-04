@@ -1,8 +1,8 @@
 {
-  "name": "vaultie-drm-prototype",
-  "version": "0.1.0",
+  "name": "vaultie-castlabs-browser-test",
+  "version": "0.2.0",
   "private": true,
-  "description": "Isolated castLabs Electron Widevine evaluation - not Vaultie production",
+  "description": "Development-only castLabs implementation of original Vaultie design; not a production replacement",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -14,14 +14,15 @@
     "electron-builder": "^26.0.12"
   },
   "build": {
-    "appId": "de.vaultie.drmtest",
-    "productName": "Vaultie DRM Test",
+    "appId": "de.vaultie.castlabs.development",
+    "productName": "Vaultie Streaming Test",
     "asar": true,
     "files": [
       "main.js",
       "preload.js",
       "toolbar.js",
       "toolbar.html",
+      "startseite.html",
       "package.json"
     ],
     "directories": {
