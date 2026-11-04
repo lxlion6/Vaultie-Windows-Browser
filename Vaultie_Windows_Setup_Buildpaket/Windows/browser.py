@@ -116,9 +116,10 @@ def configuration():
               "strip_tracking_params": True,
               "bandwidth_enabled": False, "bandwidth_mbps": 10,
               "clear_history_on_exit": False,
-              "private_session": True, **saved}
-    # Always use private session; a previous setting cannot enable disk-based browsing.
-    config["private_session"] = True
+              "private_session": False, **saved}
+    # Regular locally persisted website profile is required to keep logins.
+    # A previous private-session setting must not silently disable logins.
+    config["private_session"] = False
     config["bandwidth_enabled"] = bool(config.get("bandwidth_enabled", False))
     try:
         config["bandwidth_mbps"] = max(3, min(25, int(config.get("bandwidth_mbps", 10))))
@@ -132,15 +133,8 @@ def configuration():
         for key in obsolete:
             config.pop(key, None)
         write_json(SETTINGS, config)
-    # Browser history is never persisted. Remove legacy on-disk web storage/cache
-    # from older versions, while keeping bookmarks and user preferences.
-    for old in ("web-storage", "cache"):
-        old_path = DATA / old
-        if old_path.exists() and old_path.is_dir():
-            try:
-                shutil.rmtree(old_path)
-            except OSError:
-                pass
+    # Never erase persistent website cookies / localStorage at startup.
+    # Users can remain signed in between Vaultie launches.
     return config
 
 
@@ -389,15 +383,17 @@ class Browser(QMainWindow):
             self.history = []
         self.session_downloads = []
         self.cleaned_tracking_parameters = 0
-        # Off-the-record Qt WebEngine profile by default: website cookies,
-        # cache and storage remain in memory and are discarded on exit.
-        # User-owned settings/bookmarks remain on disk, never uploaded by us.
-        self.profile = QWebEngineProfile(self)
+        # Named Qt WebEngine profile: persistent site cookies and HTML5 storage
+        # stay on this PC, independent of the separate local history JSON.
+        # Memory-only HTTP cache limits avoidable disk activity.
+        self.profile = QWebEngineProfile("VaultieLocal", self)
+        website_data = DATA / "website-profile"
+        website_data.mkdir(parents=True, exist_ok=True)
+        self.profile.setPersistentStoragePath(str(website_data))
         self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
         self.profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
-        # Only in-memory visited links; never write browser history to disk.
-        # Permissions must be granted again after restarting the browser.
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        # Location/camera/microphone permissions remain session-scoped.
         self.profile.setPersistentPermissionsPolicy(
             QWebEngineProfile.PersistentPermissionsPolicy.StoreInMemory)
         self.cookie_filter = lambda request: (
@@ -432,7 +428,7 @@ class Browser(QMainWindow):
         self.create_controls()
         self.apply_design()
         self.add_tab(HOME)
-        self.statusBar().showMessage("Vaultie · Verlauf und Lesezeichen lokal gespeichert · Keine Cloud-Synchronisierung")
+        self.statusBar().showMessage("Vaultie · Website-Anmeldungen bleiben lokal gespeichert · Keine Cloud-Synchronisierung")
 
     def connection_status(self):
         return "Verlauf ausschließlich lokal gespeichert"
@@ -1131,23 +1127,23 @@ class Browser(QMainWindow):
         dialog.exec()
 
     def clear_site_data(self):
-        result = QMessageBox.question(self, "Lokale Website-Daten loeschen",
-            "Cookies, Cache und Besuchslinks entfernen?\n"
-            "Du wirst dadurch eventuell von Webseiten abgemeldet.\n"
-            "Lesezeichen und Einstellungen bleiben erhalten.\n"
-            "Schliesse den Browser nach dem Loeschen und starte ihn erneut.")
+        result = QMessageBox.question(self, "Lokale Website-Daten löschen",
+            "Gespeicherte Cookies und Website-Anmeldungen entfernen?\n"
+            "Du wirst dadurch möglicherweise von Webseiten abgemeldet.\n"
+            "Lesezeichen und Verlauf bleiben erhalten.\n"
+            "Website-Speicher (z. B. LocalStorage) bleibt unter Umständen bestehen.")
         if result != QMessageBox.StandardButton.Yes:
             return
         self.profile.cookieStore().deleteAllCookies()
         self.profile.clearHttpCache()
         self.profile.clearAllVisitedLinks()
-        # LocalStorage/IndexedDB/service workers cannot be fully erased using
-        # these APIs. Full deletion requires browser shutdown and profile removal.
+        # Clearing profile cookies is asynchronous. Website localStorage/IndexedDB
+        # may survive; do not claim a full website-data reset.
         QMessageBox.information(self, "Datenschutz",
-            "Cookies, HTTP-Cache und Besuchslinks werden geloescht.\n"
-            "WICHTIG: Website-Speicher wie IndexedDB und LocalStorage koennen verbleiben.\n"
-            "Fuer vollstaendige Loeschung den Browser beenden und im Datenordner\n"
-            "die Ordner 'web-storage' und 'cache' entfernen.")
+            "Die Löschung der Cookies und des Caches wurde gestartet.\n"
+            "Website-Speicher (z. B. LocalStorage) kann bestehen bleiben.\n"
+            "Zum vollständigen Zurücksetzen Vaultie beenden und im lokalen\n"
+            "Datenordner den Unterordner 'website-profile' entfernen.")
 
     def show_data_folder(self):
         # Use the Windows shell to open the local folder; no upload is performed.
@@ -1173,9 +1169,12 @@ class Browser(QMainWindow):
             "Diese Version hat keine VPN-Integration. "
             "Der Browser verwendet die normalen Windows-Netzwerkeinstellungen. "
             "Ein separat eingeschaltetes Windows-VPN kann trotzdem den Browser betreffen.\n\n"
-            "Lokale Lesezeichen und Einstellungen werden nicht in eine Browser-Cloud hochgeladen. "
-            "Der Verlauf wird ausschließlich lokal gespeichert; Cookies und Cache bleiben nur fuer die Sitzung bestehen. "
-            "Passwoerter werden nicht in einer eigenen Passwortdatenbank gespeichert.\n\n"
+            "Lesezeichen, Verlauf und Website-Anmeldungen werden lokal gespeichert, "
+            "nicht in eine Vaultie-Cloud übertragen. Cookies und Website-Speicher "
+            "können Anmeldeinformationen enthalten; schütze daher dein Windows-Konto. "
+            "Der HTTP-Cache bleibt nur im Arbeitsspeicher. "
+            "Ein eigener Passwortmanager ist nicht integriert; Websites können die "
+            "Anmeldung trotzdem erneut verlangen.\n\n"
             "Der Werbeblocker nutzt einfache Domainfilter. Dies ist keine unabhaengig "
             "sicherheitsgepruefte Browser-Version. Websites erhalten weiterhin "
             "technisch erforderliche Anfragen und von dir eingegebene Daten.")
