@@ -1,5 +1,7 @@
 """PrivatBrowser: erster Windows-Desktopbrowser auf Qt WebEngine."""
 import json
+import html
+from datetime import datetime
 import os
 import re
 import shutil
@@ -62,6 +64,8 @@ def profile_directory():
 DATA = profile_directory()
 SETTINGS = DATA / "settings.json"
 BOOKMARKS = DATA / "bookmarks.json"
+PINNED = DATA / "pinned.json"
+HISTORY = DATA / "history.json"
 FILTERS = DATA / "filterliste.txt"
 DOWNLOADS = DATA / "Downloads"
 DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -202,7 +206,12 @@ class BrowserPage(QWebEnginePage):
             if action == "start":
                 self.window.open_home()
             elif action == "bookmarks":
-                self.window.show_bookmarks()
+                self.window.choose_home_bookmarks()
+            elif action == "unpin":
+                try:
+                    self.window.unpin_home_bookmark(int(url.path().strip("/")))
+                except (ValueError, IndexError):
+                    pass
             elif action == "downloads":
                 self.window.show_data_folder()
                 QMessageBox.information(self.window, "Downloads", "Heruntergeladene Dateien werden im von dir gewählten Ordner gespeichert.")
@@ -353,6 +362,14 @@ class Browser(QMainWindow):
         if icon.exists():
             self.setWindowIcon(QIcon(str(icon)))
         self.bookmarks = read_json(BOOKMARKS, [])
+        self.pinned = read_json(PINNED, [])
+        self.history = read_json(HISTORY, [])
+        if not isinstance(self.bookmarks, list):
+            self.bookmarks = []
+        if not isinstance(self.pinned, list):
+            self.pinned = []
+        if not isinstance(self.history, list):
+            self.history = []
         self.session_downloads = []
         self.cleaned_tracking_parameters = 0
         # Off-the-record Qt WebEngine profile by default: website cookies,
@@ -398,10 +415,10 @@ class Browser(QMainWindow):
         self.create_controls()
         self.apply_design()
         self.add_tab(HOME)
-        self.statusBar().showMessage("Vaultie · Der Verlauf wird niemals gespeichert · Keine VPN-Integration")
+        self.statusBar().showMessage("Vaultie · Verlauf und Lesezeichen lokal gespeichert · Keine Cloud-Synchronisierung")
 
     def connection_status(self):
-        return "Der Verlauf wird niemals gespeichert"
+        return "Verlauf ausschließlich lokal gespeichert"
 
     def apply_design(self):
         self.setStyleSheet("""
@@ -461,6 +478,7 @@ class Browser(QMainWindow):
         self.address.returnPressed.connect(self.navigate)
         bar.addWidget(self.address)
         self.toolbar_button(bar, "☆", self.bookmark_current, "Lesezeichen speichern (Strg+D)")
+        self.toolbar_button(bar, "▣☆", self.show_bookmarks, "Alle Lesezeichen öffnen und verwalten")
         self.adblock_button = self.toolbar_button(bar, "◆  Schutz aktiv", self.toggle_blocker,
             "Werbeblocker ein- oder ausschalten", "adblockState")
         self.refresh_blocker_status()
@@ -494,7 +512,7 @@ class Browser(QMainWindow):
         menu.addAction("Filterliste importieren", self.import_filters)
         menu.addAction("Drittanbieter-Cookies umschalten", self.toggle_third_party_cookies)
         menu.addAction("Cookies und Cache löschen", self.clear_site_data)
-        menu.addAction("Verlauf: niemals speichern", self.show_history_policy)
+        menu.addAction("Lokalen Verlauf anzeigen", self.show_history_policy)
         menu.addAction("Lokalen Datenordner anzeigen", self.show_data_folder)
         menu.addSeparator()
         menu.addAction("Datenschutzhinweise", self.show_security_notes)
@@ -606,9 +624,35 @@ class Browser(QMainWindow):
             "Windows-Anwendungen der Anbieter sind separat zu installieren. "
             "Ein Windows-VPN kann auch andere Programme beeinflussen.")
 
-    @staticmethod
-    def start_page_html():
-        return (ASSETS / "startseite.html").read_text(encoding="utf-8")
+    def start_page_html(self):
+        content = (ASSETS / "startseite.html").read_text(encoding="utf-8")
+        cards = []
+        for index, url in enumerate(self.pinned):
+            entry = next((b for b in self.bookmarks if b.get("url") == url), None)
+            if not entry:
+                continue
+            safe_url = html.escape(url, quote=True)
+            safe_title = html.escape(entry.get("title", "Lesezeichen"), quote=True)
+            cards.append(
+                '<div class="pinned-tile"><a class="tile" href="' + safe_url
+                + '"><span class="appicon">☆</span><strong>' + safe_title
+                + '</strong></a><a class="pin-remove" title="Nur von der Startseite entfernen" '
+                + 'href="vaultie://unpin/' + str(index) + '">×</a></div>')
+        content = content.replace(
+            '<div class="shortcutgrid">',
+            '<div class="shortcutgrid">' + "".join(cards), 1)
+        content = content.replace(
+            '<div class="panel">',
+            '<style>.pinned-tile{position:relative;min-width:0}'
+            '.pinned-tile .tile{height:100%;padding:10px;overflow-wrap:anywhere}'
+            '.pin-remove{position:absolute;top:5px;right:8px;z-index:2;'
+            'font-size:22px;color:#d5ffff;text-decoration:none;'
+            'padding:1px 7px;border-radius:8px;background:#174752}'
+            '.pin-remove:hover{background:#ad3546;color:white}</style>'
+            '<div class="panel">', 1)
+        content = content.replace('Der Verlauf wird niemals gespeichert.',
+                                  'Verlauf wird nur lokal gespeichert.')
+        return content
 
     def current(self):
         return self.tabs.currentWidget()
@@ -618,6 +662,7 @@ class Browser(QMainWindow):
         page = BrowserPage(self.profile, self, view)
         view.setPage(page)
         view.titleChanged.connect(lambda title, v=view: self.set_tab_title(v, title))
+        view.loadFinished.connect(lambda ok, v=view: self.record_history(v) if ok else None)
         view.urlChanged.connect(lambda _url, v=view: self.update_address(v))
         view.loadProgress.connect(lambda n: self.statusBar().showMessage(f"Lade {n} %" if n < 100 else self.connection_status()))
         idx = self.tabs.addTab(view, "Neuer Tab")
@@ -680,47 +725,176 @@ class Browser(QMainWindow):
         view = self.current()
         if not view:
             return
-        value = {"title": view.title(), "url": view.url().toString()}
-        if not any(item.get("url") == value["url"] for item in self.bookmarks):
+        url = view.url().toString()
+        if urlsplit(url).scheme not in ("https", "http"):
+            self.statusBar().showMessage("Nur Webseiten lassen sich als Lesezeichen speichern", 3000)
+            return
+        value = {"title": view.title() or url, "url": url}
+        if not any(item.get("url") == url for item in self.bookmarks):
             self.bookmarks.append(value)
             write_json(BOOKMARKS, self.bookmarks)
             self.statusBar().showMessage("Lesezeichen gespeichert", 3000)
+        else:
+            self.statusBar().showMessage("Lesezeichen bereits vorhanden", 3000)
+
+    def refresh_home_if_visible(self):
+        for index in range(self.tabs.count()):
+            view = self.tabs.widget(index)
+            if view and view.url().toString() == "about:blank" and "Vaultie" in view.title():
+                view.setHtml(self.start_page_html(), QUrl("about:blank"))
+
+    def choose_home_bookmarks(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Lesezeichen auf der Startseite auswählen")
+        dialog.resize(600, 450)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Lesezeichen auswählen. Die Auswahl bleibt nur lokal gespeichert."))
+        search = QLineEdit(dialog)
+        search.setPlaceholderText("Lesezeichen suchen")
+        layout.addWidget(search)
+        items = QListWidget(dialog)
+        items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        layout.addWidget(items)
+        from PySide6.QtWidgets import QListWidgetItem
+        for bookmark in self.bookmarks:
+            url = bookmark.get("url", "")
+            if urlsplit(url).scheme not in ("https", "http"):
+                continue
+            item = QListWidgetItem(bookmark.get("title", url) + " — " + url)
+            item.setData(Qt.ItemDataRole.UserRole, url)
+            items.addItem(item)
+            if url in self.pinned:
+                item.setSelected(True)
+        search.textChanged.connect(
+            lambda q: [items.item(i).setHidden(q.casefold() not in items.item(i).text().casefold())
+                       for i in range(items.count())])
+        row = QHBoxLayout()
+        save = QPushButton("Auswahl auf Startseite anzeigen")
+        save.clicked.connect(lambda: (
+            self.save_pinned([items.item(i).data(Qt.ItemDataRole.UserRole)
+                              for i in range(items.count()) if items.item(i).isSelected()]),
+            dialog.accept()))
+        close = QPushButton("Abbrechen")
+        close.clicked.connect(dialog.reject)
+        row.addWidget(save)
+        row.addWidget(close)
+        layout.addLayout(row)
+        dialog.exec()
+
+    def save_pinned(self, urls):
+        allowed = {item.get("url") for item in self.bookmarks}
+        self.pinned = list(dict.fromkeys(u for u in urls if u in allowed))
+        write_json(PINNED, self.pinned)
+        self.refresh_home_if_visible()
+
+    def unpin_home_bookmark(self, index):
+        if 0 <= index < len(self.pinned):
+            self.pinned.pop(index)
+            write_json(PINNED, self.pinned)
+            self.refresh_home_if_visible()
 
     def show_bookmarks(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle("Lokale Lesezeichen")
-        dialog.resize(650, 400)
+        dialog.setWindowTitle("Lokale Lesezeichen verwalten")
+        dialog.resize(760, 490)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Lesezeichen werden ausschließlich auf diesem PC gespeichert."))
+        search = QLineEdit(dialog)
+        search.setPlaceholderText("Lesezeichen durchsuchen")
+        layout.addWidget(search)
         items = QListWidget(dialog)
         layout.addWidget(items)
+        from PySide6.QtWidgets import QListWidgetItem
 
         def refresh():
             items.clear()
             for entry in self.bookmarks:
-                items.addItem(f"{entry.get('title', 'Webseite')}  —  {entry.get('url', '')}")
+                url = entry.get("url", "")
+                item = QListWidgetItem(
+                    ("★ " if url in self.pinned else "") +
+                    entry.get("title", "Webseite") + " — " + url)
+                item.setData(Qt.ItemDataRole.UserRole, url)
+                items.addItem(item)
+            filter_items(search.text())
+
+        def filter_items(query):
+            for i in range(items.count()):
+                item = items.item(i)
+                item.setHidden(query.casefold() not in item.text().casefold())
+
+        def selected():
+            item = items.currentItem()
+            if not item:
+                return None
+            return next((b for b in self.bookmarks
+                         if b.get("url") == item.data(Qt.ItemDataRole.UserRole)), None)
 
         def open_selected():
-            index = items.currentRow()
-            if 0 <= index < len(self.bookmarks):
-                self.current().setUrl(QUrl(self.bookmarks[index]["url"]))
+            entry = selected()
+            if entry and self.current():
+                self.current().setUrl(QUrl(entry["url"]))
                 dialog.accept()
 
+        def edit_selected():
+            entry = selected()
+            if not entry:
+                return
+            title, ok = QInputDialog.getText(dialog, "Lesezeichen bearbeiten",
+                                             "Name:", text=entry.get("title", ""))
+            if not ok:
+                return
+            url, ok = QInputDialog.getText(dialog, "Lesezeichen bearbeiten",
+                                           "Webadresse:", text=entry.get("url", ""))
+            if not ok or urlsplit(url.strip()).scheme not in ("https", "http"):
+                return
+            old = entry["url"]
+            if url != old and any(b.get("url") == url for b in self.bookmarks):
+                QMessageBox.warning(dialog, "Lesezeichen", "Diese Adresse ist bereits gespeichert.")
+                return
+            entry.update(title=title.strip() or url, url=url.strip())
+            self.pinned = [url if u == old else u for u in self.pinned]
+            write_json(BOOKMARKS, self.bookmarks)
+            write_json(PINNED, self.pinned)
+            refresh()
+            self.refresh_home_if_visible()
+
         def remove_selected():
-            index = items.currentRow()
-            if 0 <= index < len(self.bookmarks):
-                del self.bookmarks[index]
-                write_json(BOOKMARKS, self.bookmarks)
-                refresh()
+            entry = selected()
+            if not entry:
+                return
+            if QMessageBox.question(dialog, "Lesezeichen löschen",
+                                    "Lesezeichen vollständig löschen?") != QMessageBox.StandardButton.Yes:
+                return
+            self.bookmarks.remove(entry)
+            self.pinned = [u for u in self.pinned if u != entry["url"]]
+            write_json(BOOKMARKS, self.bookmarks)
+            write_json(PINNED, self.pinned)
+            refresh()
+            self.refresh_home_if_visible()
+
+        def toggle_pin():
+            entry = selected()
+            if not entry:
+                return
+            url = entry["url"]
+            if url in self.pinned:
+                self.pinned.remove(url)
+            else:
+                self.pinned.append(url)
+            write_json(PINNED, self.pinned)
+            refresh()
+            self.refresh_home_if_visible()
 
         row = QHBoxLayout()
-        for label, handler in (("Öffnen", open_selected),
-                               ("Entfernen", remove_selected),
-                               ("Schließen", dialog.reject)):
+        for label, callback in (("Öffnen", open_selected),
+                                ("Bearbeiten", edit_selected),
+                                ("Anheften / Entfernen", toggle_pin),
+                                ("Löschen", remove_selected),
+                                ("Schließen", dialog.reject)):
             button = QPushButton(label, dialog)
-            button.clicked.connect(handler)
+            button.clicked.connect(callback)
             row.addWidget(button)
         layout.addLayout(row)
+        search.textChanged.connect(filter_items)
         items.itemDoubleClicked.connect(lambda _item: open_selected())
         refresh()
         dialog.exec()
@@ -800,8 +974,89 @@ class Browser(QMainWindow):
             "Einige Login- oder Videodienste benoetigen Drittanbieter-Cookies.\n"
             "Die Aenderung gilt fuer neue Zugriffe.")
 
+    def record_history(self, view):
+        url = view.url().toString()
+        if urlsplit(url).scheme not in ("http", "https"):
+            return
+        title = view.title() or url
+        if self.history and self.history[-1].get("url") == url:
+            self.history[-1]["title"] = title
+            self.history[-1]["visited"] = datetime.now().isoformat(timespec="seconds")
+        else:
+            self.history.append({
+                "url": url, "title": title,
+                "visited": datetime.now().isoformat(timespec="seconds")})
+        # Bounded local history, independent of WebKit's in-memory session.
+        self.history = self.history[-2000:]
+        write_json(HISTORY, self.history)
+
     def show_history_policy(self):
-        QMessageBox.information(self, "Verlauf", "Der Verlauf wird niemals gespeichert.\n\nVaultie verwendet einen nichtpersistenten Browsermodus. Besuchte Seiten werden nicht in eine Verlaufsdatei geschrieben.\n\nLesezeichen und Einstellungen bleiben lokal gespeichert. Websites können eigene Daten über deine Aufrufe erhalten.")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Lokaler Verlauf")
+        dialog.resize(760, 460)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Zuletzt besuchte Seiten. Nur auf diesem PC gespeichert."))
+        search = QLineEdit(dialog)
+        search.setPlaceholderText("Im Verlauf suchen")
+        layout.addWidget(search)
+        items = QListWidget(dialog)
+        layout.addWidget(items)
+        from PySide6.QtWidgets import QListWidgetItem
+
+        def refresh():
+            items.clear()
+            for entry in reversed(self.history):
+                item = QListWidgetItem(
+                    entry.get("visited", "") + "  " +
+                    entry.get("title", "") + " — " + entry.get("url", ""))
+                item.setData(Qt.ItemDataRole.UserRole, entry.get("url", ""))
+                items.addItem(item)
+            filter_items(search.text())
+
+        def filter_items(value):
+            for i in range(items.count()):
+                item = items.item(i)
+                item.setHidden(value.casefold() not in item.text().casefold())
+
+        def open_selected():
+            item = items.currentItem()
+            if item and self.current():
+                self.current().setUrl(QUrl(item.data(Qt.ItemDataRole.UserRole)))
+                dialog.accept()
+
+        def remove_selected():
+            item = items.currentItem()
+            if not item:
+                return
+            # Exact row in reverse chronological history, including duplicates.
+            index = len(self.history) - 1 - items.row(item)
+            if 0 <= index < len(self.history):
+                del self.history[index]
+                write_json(HISTORY, self.history)
+                refresh()
+
+        def delete_all():
+            if QMessageBox.question(
+                    dialog, "Verlauf löschen", "Den gesamten lokalen Verlauf löschen?"
+                ) != QMessageBox.StandardButton.Yes:
+                return
+            self.history.clear()
+            write_json(HISTORY, self.history)
+            refresh()
+
+        row = QHBoxLayout()
+        for label, callback in (("Öffnen", open_selected),
+                                ("Ausgewählten Eintrag löschen", remove_selected),
+                                ("Gesamten Verlauf löschen", delete_all),
+                                ("Schließen", dialog.reject)):
+            button = QPushButton(label, dialog)
+            button.clicked.connect(callback)
+            row.addWidget(button)
+        layout.addLayout(row)
+        search.textChanged.connect(filter_items)
+        items.itemDoubleClicked.connect(lambda _item: open_selected())
+        refresh()
+        dialog.exec()
 
     def clear_site_data(self):
         result = QMessageBox.question(self, "Lokale Website-Daten loeschen",
@@ -847,7 +1102,7 @@ class Browser(QMainWindow):
             "Der Browser verwendet die normalen Windows-Netzwerkeinstellungen. "
             "Ein separat eingeschaltetes Windows-VPN kann trotzdem den Browser betreffen.\n\n"
             "Lokale Lesezeichen und Einstellungen werden nicht in eine Browser-Cloud hochgeladen. "
-            "Der Verlauf wird niemals gespeichert; Cookies und Cache bleiben nur fuer die Sitzung bestehen. "
+            "Der Verlauf wird ausschließlich lokal gespeichert; Cookies und Cache bleiben nur fuer die Sitzung bestehen. "
             "Passwoerter werden nicht in einer eigenen Passwortdatenbank gespeichert.\n\n"
             "Der Werbeblocker nutzt einfache Domainfilter. Dies ist keine unabhaengig "
             "sicherheitsgepruefte Browser-Version. Websites erhalten weiterhin "
