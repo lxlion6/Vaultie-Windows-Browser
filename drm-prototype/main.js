@@ -5,7 +5,7 @@ const HOME='vaultie://home';
 const BLOCKED=['doubleclick.net','googlesyndication.com','googleadservices.com','adnxs.com','taboola.com','outbrain.com','scorecardresearch.com','criteo.com','rubiconproject.com','pubmatic.com','adsrvr.org'];
 const TRACK=new Set(['fbclid','gclid','dclid','msclkid','twclid','igshid','mc_cid','mc_eid']);
 let win=null,tabs=new Map(),active=null,seq=0,ready=false,widevine='Nicht geprüft',downloads=[],bookmarks=[],passwords=[],settings={adblock:true,stripTracking:true,rememberSessions:false},blocked=0,closing=false;
-let dir,profile;
+let dir,profile,panelOpen=false;
 const read=(p,d)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'));}catch{return d;}};
 function save(p,x){const tmp=p+'.tmp';fs.writeFileSync(tmp,JSON.stringify(x,null,2),'utf8');fs.renameSync(tmp,p);}
 function file(n){return path.join(dir,n);}
@@ -15,7 +15,7 @@ function location(input){const s=String(input||'').trim();if(s===HOME)return HOM
 function selected(){return tabs.get(active);}
 function state(){return {tabs:[...tabs.values()].map(t=>({id:t.id,title:t.title,url:t.url,active:t.id===active,loading:t.loading})),active,bookmarks,downloads:downloads.slice(-70),settings,blocked,widevine,encryption:safeStorage.isEncryptionAvailable()};}
 function notify(){if(win&&!win.isDestroyed()&&ready)win.webContents.send('vaultie:state',state());}
-function layout(){if(!win||win.isDestroyed())return;const [w,h]=win.getContentSize();for(const t of tabs.values())t.view.setBounds({x:0,y:113,width:Math.max(1,w),height:Math.max(1,h-137)});}
+function layout(){if(!win||win.isDestroyed())return;const [w,h]=win.getContentSize();for(const t of tabs.values()){const y=panelOpen?520:113;t.view.setBounds({x:0,y,width:Math.max(1,w),height:Math.max(1,h-y-24)});}}
 function snapshot(t){if(!t||t.view.webContents.isDestroyed())return;t.url=t.view.webContents.getURL()||t.url;t.title=t.view.webContents.getTitle()||t.title;t.loading=t.view.webContents.isLoading();notify();}
 function setActive(id){const t=tabs.get(id);if(!t)return;if(active!==null&&tabs.has(active))win.contentView.removeChildView(tabs.get(active).view);active=id;win.contentView.addChildView(t.view);layout();t.view.webContents.focus();notify();}
 function newTab(address=HOME,switchTo=true){
@@ -91,6 +91,7 @@ async function command(event,cmd,arg){
  const t=selected(),wc=t?.view.webContents;
  switch(cmd){
  case 'state':return state();
+ case 'panel':panelOpen=Boolean(arg);layout();return {ok:true};
  case 'new-tab':return newTab(typeof arg==='string'?arg:HOME);
  case 'switch-tab':setActive(Number(arg));break;
  case 'close-tab':closeTab(Number(arg));break;
