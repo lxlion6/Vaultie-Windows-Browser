@@ -28,7 +28,7 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
 DEFAULT_SHORTCUTS = (
@@ -157,12 +157,16 @@ def configuration():
     return config
 
 
-def preconfigure_chromium(proxy_port):
-    """Send ordinary Chromium HTTP(S) traffic through Vaultie's loopback limiter."""
-    args = ["--disable-background-networking", "--disable-quic",
+def preconfigure_chromium(proxy_port=None):
+    """Use native networking when the optional bandwidth limit is disabled."""
+    args = ["--disable-background-networking",
             "--no-pings", "--disable-features=MediaRouter",
-            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-            f"--proxy-server=http://127.0.0.1:{proxy_port}"]
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"]
+    if proxy_port is not None:
+        # Explicit throttling requires the local proxy and disables QUIC only
+        # in that mode, since the limiter implements HTTP and HTTPS TCP.
+        args.extend(["--disable-quic",
+                     f"--proxy-server=http://127.0.0.1:{proxy_port}"])
     # Widevine is not bundled. Accept only an existing, user-selected DLL.
     cdm = read_json(SETTINGS, {}).get("widevine_path", "")
     if (sys.platform == "win32" and isinstance(cdm, str)
@@ -719,10 +723,9 @@ class Browser(QMainWindow):
         layout.addWidget(slider)
         note = QLabel(
             "Alle Werte in Mbit/s (Megabit pro Sekunde), nicht MB/s. "
-            "Bei AUS wird nicht gedrosselt. Technisch wird nur Vaulties "
-            "Webverkehr über einen lokalen Proxy geleitet. Andere Windows-"
-            "Programme werden nicht begrenzt. Vorhandene Systemproxy-"
-            "Einstellungen können dadurch für Vaultie übersteuert werden.")
+            "Bei AUS nutzt Vaultie direkt das Windows-Netzwerk ohne eigenen Proxy. "
+            "Bei EIN wird der lokale Proxy für das Limit verwendet. "
+            "Änderungen von EIN/AUS werden nach einem Neustart wirksam.")
         note.setWordWrap(True)
         layout.addWidget(note)
 
@@ -731,13 +734,19 @@ class Browser(QMainWindow):
             new_mbps = slider.value()
             value_label.setText(f"{new_mbps} Mbit/s")
             slider.setEnabled(new_enabled)
-            self.bandwidth_proxy.configure(new_enabled, new_mbps)
+            if self.bandwidth_proxy is not None:
+                self.bandwidth_proxy.configure(
+                    new_enabled and self.bandwidth_proxy is not None, new_mbps)
             self.config["bandwidth_enabled"] = new_enabled
             self.config["bandwidth_mbps"] = new_mbps
             self.refresh_bandwidth_status()
 
         def persist():
             write_json(SETTINGS, self.config)
+            current_proxy = self.bandwidth_proxy is not None
+            if enabled.isChecked() != current_proxy:
+                self.statusBar().showMessage(
+                    "Bandbreitenlimit: Änderung erst nach Neustart wirksam", 7000)
 
         enabled.toggled.connect(lambda _checked: (apply(), persist()))
         slider.valueChanged.connect(lambda _value: apply())
@@ -1875,9 +1884,9 @@ class Browser(QMainWindow):
 def main():
     config = configuration()
     try:
-        local_proxy = LocalBandwidthProxy(
-            config.get("bandwidth_enabled", False),
-            config.get("bandwidth_mbps", 10))
+        local_proxy = (LocalBandwidthProxy(
+            True, config.get("bandwidth_mbps", 10))
+            if config.get("bandwidth_enabled", False) else None)
     except OSError as exc:
         app = QApplication(sys.argv)
         QMessageBox.critical(
@@ -1886,7 +1895,7 @@ def main():
             "Vaultie startet aus Sicherheitsgründen nicht mit einem "
             f"unbemerkten Netzwerkausnahmefall.\n\n{exc}")
         return 1
-    preconfigure_chromium(local_proxy.port)
+    preconfigure_chromium(local_proxy.port if local_proxy else None)
     if sys.platform == "win32":
         try:
             import ctypes
@@ -1900,7 +1909,8 @@ def main():
     window = Browser(config, local_proxy)
     window.show()
     result = app.exec()
-    local_proxy.stop()
+    if local_proxy is not None:
+        local_proxy.stop()
     return result
 
 
