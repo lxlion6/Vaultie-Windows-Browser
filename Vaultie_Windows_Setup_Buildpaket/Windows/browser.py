@@ -203,6 +203,10 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 class BrowserPage(QWebEnginePage):
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
         if url.scheme() == "vaultie":
+            # Only our internal start page may invoke vaultie:// UI actions.
+            # Ordinary websites must not modify local bookmarks or trigger dialogs.
+            if not is_main_frame or self.url().toString() != "about:blank":
+                return False
             action = url.host() or url.path().lstrip("/")
             if action == "start":
                 self.window.open_home()
