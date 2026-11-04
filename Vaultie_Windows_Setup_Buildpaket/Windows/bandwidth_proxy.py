@@ -110,9 +110,7 @@ class _Handler(socketserver.BaseRequestHandler):
                     self._forward(remote, outgoing)
                 peers = (client, remote)
                 while True:
-                    readable, _, _ = select.select(peers, (), (), 45)
-                    if not readable:
-                        break
+                    readable, _, _ = select.select(peers, (), (), None)
                     for source in readable:
                         data = source.recv(CHUNK_SIZE)
                         if not data:
