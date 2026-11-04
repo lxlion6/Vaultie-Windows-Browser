@@ -863,7 +863,7 @@ class Browser(QMainWindow):
         menu.addAction("Gespeicherte Logins verwalten", self.show_saved_logins)
         button = self.sender()
         if isinstance(button, QToolButton):
-            menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+            menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
         else:
             menu.exec()
 
