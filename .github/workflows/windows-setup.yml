@@ -25,31 +25,37 @@ jobs:
     steps:
       - name: Quellcode laden
         uses: actions/checkout@v4
-      - name: .NET 8 für WebView2 bereitstellen
-        uses: actions/setup-dotnet@v4
+      - name: Python bereitstellen
+        uses: actions/setup-python@v5
         with:
-          dotnet-version: '8.0.x'
-      - name: Eine Browser-Engine für alle Webseiten erstellen
+          python-version: '3.12'
+          architecture: x64
+      - name: Lokalen Bandbreitenbegrenzer testen
         shell: pwsh
         run: |
-          # WebView2 relies on the native WebView2Loader.dll. A single EXE
-          # without this DLL passes compilation but fails at runtime.
-          dotnet publish Streaming/Vaultie.Streaming.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -o Streaming/publish
-          if ($LASTEXITCODE -ne 0) { throw 'Vaultie WebView2-Build fehlgeschlagen' }
-          if (-not (Test-Path 'Streaming/publish/Vaultie.Streaming.exe')) { throw 'Browser-EXE fehlt' }
-          $loader = Get-ChildItem 'Streaming/publish' -Filter 'WebView2Loader.dll' -File -Recurse | Where-Object { $_.FullName -match 'win-x64|publish\\WebView2Loader.dll' } | Select-Object -First 1
-          if (-not $loader) { throw 'KRITISCH: WebView2Loader.dll fehlt im Publish. Kein Installer wird veroeffentlicht.' }
-          $targetLoader = Join-Path (Resolve-Path 'Streaming/publish').Path 'WebView2Loader.dll'
-          if (-not [string]::Equals($loader.FullName, $targetLoader, [StringComparison]::OrdinalIgnoreCase)) {
-            Copy-Item $loader.FullName $targetLoader -Force
-          }
-          New-Item -ItemType Directory -Force 'dist/Vaultie' | Out-Null
-          Copy-Item 'Streaming/publish/*' 'dist/Vaultie/' -Recurse -Force
-          Move-Item 'dist/Vaultie/Vaultie.Streaming.exe' 'dist/Vaultie/Vaultie.exe' -Force
-          if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Installer-Browser fehlt' }
-          if (-not (Test-Path 'dist/Vaultie/WebView2Loader.dll')) { throw 'Kritisch: WebView2Loader.dll fehlt im Installer' }
-          $total = (Get-ChildItem 'dist/Vaultie' -File -Recurse | Measure-Object -Property Length -Sum).Sum
-          Write-Host "Browserdateien im Installer: $total Bytes"
+          python -m py_compile browser.py bandwidth_proxy.py storage_manager.py credentials.py
+          node --check assets/fingerprint.js
+          if ($LASTEXITCODE -ne 0) { throw 'Fingerprint-Skript hat Syntaxfehler' }
+          python -m unittest -v test_bandwidth_proxy test_storage_manager test_credentials
+          if ($LASTEXITCODE -ne 0) { throw 'Bandbreitenbegrenzer-Test fehlgeschlagen' }
+      - name: Bibliotheken installieren
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pip-audit
+          python -m pip_audit --local
+          if ($LASTEXITCODE -ne 0) { throw 'Paket-Schwachstellenprüfung fehlgeschlagen' }
+      - name: Vaultie kompilieren
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --name Vaultie `
+            --icon assets/vaultie.ico `
+            --add-data "assets;assets" `
+            --collect-all PySide6.QtWebEngineCore `
+            --collect-all PySide6.QtWebEngineWidgets `
+            browser.py
+          if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Programmdatei fehlt' }
       - name: Installer erstellen
         shell: pwsh
         run: |
