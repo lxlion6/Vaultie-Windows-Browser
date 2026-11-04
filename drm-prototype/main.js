@@ -16,7 +16,7 @@ function selected(){return tabs.get(active);}
 function state(){return {tabs:[...tabs.values()].map(t=>({id:t.id,title:t.title,url:t.url,active:t.id===active,loading:t.loading})),active,bookmarks,downloads:downloads.slice(-70),settings,blocked,widevine,encryption:safeStorage.isEncryptionAvailable()};}
 function notify(){if(win&&!win.isDestroyed()&&ready)win.webContents.send('vaultie:state',state());}
 function layout(){if(!win||win.isDestroyed())return;const [w,h]=win.getContentSize();for(const t of tabs.values()){const y=panelOpen?520:113;t.view.setBounds({x:0,y,width:Math.max(1,w),height:Math.max(1,h-y-24)});}}
-function snapshot(t){if(!t||t.view.webContents.isDestroyed())return;t.url=t.view.webContents.getURL()||t.url;t.title=t.view.webContents.getTitle()||t.title;t.loading=t.view.webContents.isLoading();notify();}
+function snapshot(t){if(!t||t.view.webContents.isDestroyed())return;const loaded=t.view.webContents.getURL();t.url=loaded.startsWith('file:')&&loaded.includes('startseite.html')?HOME:(loaded||t.url);t.title=t.view.webContents.getTitle()||t.title;t.loading=t.view.webContents.isLoading();notify();}
 function setActive(id){const t=tabs.get(id);if(!t)return;if(active!==null&&tabs.has(active))win.contentView.removeChildView(tabs.get(active).view);active=id;win.contentView.addChildView(t.view);layout();t.view.webContents.focus();notify();}
 function newTab(address=HOME,switchTo=true){
   const id=++seq;
