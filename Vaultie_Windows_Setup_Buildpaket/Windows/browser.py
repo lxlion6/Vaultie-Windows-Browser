@@ -11,13 +11,15 @@ from urllib.parse import quote_plus, urlsplit, urlunsplit, parse_qsl, urlencode
 
 from PySide6.QtCore import QStandardPaths, Qt, QUrl, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtNetwork import QNetworkProxy, QNetworkProxyFactory
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QListWidget, QTabBar, QStackedWidget, QToolBar, QToolButton,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QListWidget, QTabBar, QStackedWidget, QToolBar, QToolButton, QSlider, QCheckBox,
     QVBoxLayout, QWidget, QSizePolicy)
 from PySide6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEnginePage,
     QWebEngineProfile, QWebEngineSettings, QWebEngineUrlRequestInterceptor)
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from bandwidth_proxy import LocalBandwidthProxy
 
 APP_NAME = "Vaultie"
 HOME = "vaultie:start"
@@ -100,9 +102,15 @@ def configuration():
     saved = read_json(SETTINGS, {})
     config = {"adblock": True, "block_third_party_cookies": True,
               "strip_tracking_params": True,
+              "bandwidth_enabled": False, "bandwidth_mbps": 10,
               "private_session": True, **saved}
     # Always use private session; a previous setting cannot enable disk-based browsing.
     config["private_session"] = True
+    config["bandwidth_enabled"] = bool(config.get("bandwidth_enabled", False))
+    try:
+        config["bandwidth_mbps"] = max(3, min(25, int(config.get("bandwidth_mbps", 10))))
+    except (TypeError, ValueError):
+        config["bandwidth_mbps"] = 10
     # Altdaten frueherer VPN-Versionen beim Start dauerhaft entfernen.
     obsolete = ("proxy", "custom_host", "custom_port", "vpn_provider",
                 "vpn_country", "vpn_enabled", "vpn_location",
@@ -123,10 +131,12 @@ def configuration():
     return config
 
 
-def preconfigure_chromium():
-    """Keine VPN-/SOCKS-Konfiguration; Windows-Systemproxy bleibt nutzbar."""
+def preconfigure_chromium(proxy_port):
+    """Send ordinary Chromium HTTP(S) traffic through Vaultie's loopback limiter."""
     args = ["--disable-background-networking", "--disable-quic",
-            "--no-pings", "--disable-features=MediaRouter"]
+            "--no-pings", "--disable-features=MediaRouter",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            f"--proxy-server=http://127.0.0.1:{proxy_port}"]
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(args)
 
 
@@ -331,9 +341,10 @@ class BrowserTabs(QWidget):
         self._refresh_tab_width()
 
 class Browser(QMainWindow):
-    def __init__(self, config):
+    def __init__(self, config, bandwidth_proxy):
         super().__init__()
         self.config = config
+        self.bandwidth_proxy = bandwidth_proxy
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 820)
         icon = ASSETS / "vaultie.ico"
@@ -446,6 +457,10 @@ class Browser(QMainWindow):
         self.adblock_button = self.toolbar_button(bar, "◆  Schutz aktiv", self.toggle_blocker,
             "Werbeblocker ein- oder ausschalten", "adblockState")
         self.refresh_blocker_status()
+        self.bandwidth_button = self.toolbar_button(
+            bar, "", self.show_bandwidth_dialog,
+            "Vaultie-Bandbreite zwischen 3 und 25 Mbit/s begrenzen")
+        self.refresh_bandwidth_status()
         vpn_button = QToolButton(self)
         vpn_button.setObjectName("vpnRecommend")
         vpn_button.setText("VPN  ▾")
@@ -464,6 +479,7 @@ class Browser(QMainWindow):
         menu = QMenu(self)
         menu.addAction("Lesezeichen verwalten", self.show_bookmarks)
         menu.addAction("Downloads anzeigen", self.show_downloads)
+        menu.addAction("Bandbreitenlimit (3-25 Mbit/s)", self.show_bandwidth_dialog)
         menu.addAction("Werbeblocker umschalten", self.toggle_blocker)
         menu.addAction("Link-Tracking-Schutz umschalten", self.toggle_tracking_parameters)
         menu.addAction("Trackingschutz-Bericht", self.show_tracking_report)
@@ -498,6 +514,69 @@ class Browser(QMainWindow):
             enabled = self.config.get("adblock", True)
             self.adblock_button.setText("◈  Werbeblocker: An" if enabled else "◇  Werbeblocker: Aus")
             self.adblock_button.setToolTip("Einfacher Werbe-/Trackerfilter: " + ("aktiv" if enabled else "inaktiv"))
+
+    def refresh_bandwidth_status(self):
+        enabled = self.config.get("bandwidth_enabled", False)
+        mbps = self.config.get("bandwidth_mbps", 10)
+        label = f"BW: {mbps} Mbit/s" if enabled else "BW: AUS"
+        self.bandwidth_button.setText(label)
+        self.bandwidth_button.setToolTip(
+            "Lokales Bandbreitenlimit für Vaulties HTTP(S)-Verbindungen. "
+            "Download und Upload teilen sich den eingestellten Grenzwert.")
+
+    def show_bandwidth_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Vaultie - Bandbreitenlimit")
+        dialog.resize(420, 220)
+        layout = QVBoxLayout(dialog)
+        enabled = QCheckBox("Bandbreite begrenzen")
+        enabled.setChecked(self.config.get("bandwidth_enabled", False))
+        layout.addWidget(enabled)
+        description = QLabel("Gesamtlimit für Browser-Downloads und -Uploads. "
+                             "Gilt gleichzeitig für alle Tabs.")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        value_label = QLabel()
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(value_label)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(3, 25)
+        slider.setSingleStep(1)
+        slider.setTickInterval(1)
+        slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        slider.setValue(self.config.get("bandwidth_mbps", 10))
+        layout.addWidget(slider)
+        note = QLabel(
+            "Alle Werte in Mbit/s (Megabit pro Sekunde), nicht MB/s. "
+            "Bei AUS wird nicht gedrosselt. Technisch wird nur Vaulties "
+            "Webverkehr über einen lokalen Proxy geleitet. Andere Windows-"
+            "Programme werden nicht begrenzt. Vorhandene Systemproxy-"
+            "Einstellungen können dadurch für Vaultie übersteuert werden.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        def apply():
+            new_enabled = enabled.isChecked()
+            new_mbps = slider.value()
+            value_label.setText(f"{new_mbps} Mbit/s")
+            slider.setEnabled(new_enabled)
+            self.bandwidth_proxy.configure(new_enabled, new_mbps)
+            self.config["bandwidth_enabled"] = new_enabled
+            self.config["bandwidth_mbps"] = new_mbps
+            self.refresh_bandwidth_status()
+
+        def persist():
+            write_json(SETTINGS, self.config)
+
+        enabled.toggled.connect(lambda _checked: (apply(), persist()))
+        slider.valueChanged.connect(lambda _value: apply())
+        slider.sliderReleased.connect(persist)
+        layout.addWidget(QLabel("3 Mbit/s                               25 Mbit/s"))
+        done = QPushButton("Fertig")
+        done.clicked.connect(lambda: (persist(), dialog.accept()))
+        layout.addWidget(done)
+        apply()
+        dialog.exec()
 
     def show_settings_menu(self):
         self.main_menu.popup(self.menu_button.mapToGlobal(self.menu_button.rect().bottomLeft()))
@@ -785,7 +864,20 @@ class Browser(QMainWindow):
 
 
 def main():
-    preconfigure_chromium()
+    config = configuration()
+    try:
+        local_proxy = LocalBandwidthProxy(
+            config.get("bandwidth_enabled", False),
+            config.get("bandwidth_mbps", 10))
+    except OSError as exc:
+        app = QApplication(sys.argv)
+        QMessageBox.critical(
+            None, "Vaultie - Bandbreitenlimit",
+            "Der lokale Netzwerkbegrenzer konnte nicht gestartet werden. "
+            "Vaultie startet aus Sicherheitsgründen nicht mit einem "
+            f"unbemerkten Netzwerkausnahmefall.\n\n{exc}")
+        return 1
+    preconfigure_chromium(local_proxy.port)
     if sys.platform == "win32":
         try:
             import ctypes
@@ -796,10 +888,11 @@ def main():
     app.setWindowIcon(QIcon(str(ASSETS / "vaultie.ico")))
     app.setOrganizationName("Vaultie Local")
     app.setApplicationName(APP_NAME)
-    config = configuration()
-    window = Browser(config)
+    window = Browser(config, local_proxy)
     window.show()
-    return app.exec()
+    result = app.exec()
+    local_proxy.stop()
+    return result
 
 
 if __name__ == "__main__":
