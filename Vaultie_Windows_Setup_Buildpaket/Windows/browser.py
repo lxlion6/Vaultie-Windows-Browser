@@ -11,7 +11,6 @@ from urllib.parse import quote_plus, urlsplit, urlunsplit, parse_qsl, urlencode
 
 from PySide6.QtCore import QStandardPaths, Qt, QUrl, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon
-from PySide6.QtNetwork import QNetworkProxy, QNetworkProxyFactory
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QMenu, QMessageBox, QPushButton, QListWidget, QTabBar, QStackedWidget, QToolBar, QToolButton, QSlider, QCheckBox,
