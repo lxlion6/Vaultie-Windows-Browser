@@ -32,12 +32,21 @@ jobs:
       - name: Eine Browser-Engine für alle Webseiten erstellen
         shell: pwsh
         run: |
-          dotnet publish Streaming/Vaultie.Streaming.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o Streaming/publish
+          # WebView2 relies on the native WebView2Loader.dll. A single EXE
+          # without this DLL passes compilation but fails at runtime.
+          dotnet publish Streaming/Vaultie.Streaming.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -o Streaming/publish
           if ($LASTEXITCODE -ne 0) { throw 'Vaultie WebView2-Build fehlgeschlagen' }
           if (-not (Test-Path 'Streaming/publish/Vaultie.Streaming.exe')) { throw 'Browser-EXE fehlt' }
+          $loader = Get-ChildItem 'Streaming/publish' -Filter 'WebView2Loader.dll' -File -Recurse | Where-Object { $_.FullName -match 'win-x64|publish\\WebView2Loader.dll' } | Select-Object -First 1
+          if (-not $loader) { throw 'KRITISCH: WebView2Loader.dll fehlt im Publish. Kein Installer wird veroeffentlicht.' }
+          Copy-Item $loader.FullName 'Streaming/publish/WebView2Loader.dll' -Force
           New-Item -ItemType Directory -Force 'dist/Vaultie' | Out-Null
-          Copy-Item 'Streaming/publish/Vaultie.Streaming.exe' 'dist/Vaultie/Vaultie.exe' -Force
+          Copy-Item 'Streaming/publish/*' 'dist/Vaultie/' -Recurse -Force
+          Move-Item 'dist/Vaultie/Vaultie.Streaming.exe' 'dist/Vaultie/Vaultie.exe' -Force
           if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Installer-Browser fehlt' }
+          if (-not (Test-Path 'dist/Vaultie/WebView2Loader.dll')) { throw 'Kritisch: WebView2Loader.dll fehlt im Installer' }
+          $total = (Get-ChildItem 'dist/Vaultie' -File -Recurse | Measure-Object -Property Length -Sum).Sum
+          Write-Host "Browserdateien im Installer: $total Bytes"
       - name: Installer erstellen
         shell: pwsh
         run: |
