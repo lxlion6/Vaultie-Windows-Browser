@@ -39,7 +39,10 @@ jobs:
           if (-not (Test-Path 'Streaming/publish/Vaultie.Streaming.exe')) { throw 'Browser-EXE fehlt' }
           $loader = Get-ChildItem 'Streaming/publish' -Filter 'WebView2Loader.dll' -File -Recurse | Where-Object { $_.FullName -match 'win-x64|publish\\WebView2Loader.dll' } | Select-Object -First 1
           if (-not $loader) { throw 'KRITISCH: WebView2Loader.dll fehlt im Publish. Kein Installer wird veroeffentlicht.' }
-          Copy-Item $loader.FullName 'Streaming/publish/WebView2Loader.dll' -Force
+          $targetLoader = Join-Path (Resolve-Path 'Streaming/publish').Path 'WebView2Loader.dll'
+          if (-not [string]::Equals($loader.FullName, $targetLoader, [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item $loader.FullName $targetLoader -Force
+          }
           New-Item -ItemType Directory -Force 'dist/Vaultie' | Out-Null
           Copy-Item 'Streaming/publish/*' 'dist/Vaultie/' -Recurse -Force
           Move-Item 'dist/Vaultie/Vaultie.Streaming.exe' 'dist/Vaultie/Vaultie.exe' -Force
