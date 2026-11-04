@@ -12,6 +12,7 @@ button{background:#194c58;color:#f0f8fa;border:1px solid #347281;border-radius:6
 button:hover{background:#246576}button:focus-visible,input:focus-visible{outline:2px solid #6bd0ed}
 input{flex:1;min-width:130px;background:#0c1418;color:#f4f9fa;border:1px solid #42636c;border-radius:6px;padding:8px}
 small{color:#b7d0d6;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+dialog{width:min(620px,calc(100vw - 32px));max-height:75vh;background:#12252b;color:#f0f8fa;border:1px solid #4c8391;border-radius:12px;padding:22px;box-shadow:0 18px 65px #0009}dialog::backdrop{background:#000a}dialog h2{font-size:20px;margin:0 0 14px}dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;font:14px system-ui,Segoe UI,sans-serif}dialog .actions{text-align:right;margin-top:16px}button:disabled{opacity:.5;cursor:not-allowed}
 </style></head>
 <body>
 <header><div class="toolbar">
@@ -20,5 +21,10 @@ small{color:#b7d0d6;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 <input id="address" aria-label="Webadresse" spellcheck="false" placeholder="HTTPS-Adresse oder Suchbegriff"/>
 <button id="go">Öffnen</button><button id="diagnose">Video/DRM prüfen</button>
 </div><small id="status">Widevine wird initialisiert. Dies ist ein getrennter Techniktest, kein Ersatz für Vaultie 4.2.</small></header>
+<dialog id="diagnostics" aria-labelledby="diagnostics-title">
+<h2 id="diagnostics-title">Video- und DRM-Prüfung</h2>
+<pre id="diagnostics-result" aria-live="polite">Prüfung startet …</pre>
+<div class="actions"><button id="diagnostics-close">Schließen</button></div>
+</dialog>
 <script src="./toolbar.js"></script>
 </body></html>
