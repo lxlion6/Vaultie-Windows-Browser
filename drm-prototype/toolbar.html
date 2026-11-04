@@ -1,30 +1,66 @@
 <!doctype html>
-<html lang="de">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vaultie DRM-Test</title>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vaultie</title>
 <style>
-:root{color-scheme:dark;font:14px system-ui,Segoe UI,sans-serif}
-*{box-sizing:border-box}body{margin:0;background:#101b20;color:#e5f3f6}
-header{height:92px;padding:8px 13px;border-bottom:1px solid #2a4851;display:flex;flex-direction:column;gap:7px}
-.toolbar{display:flex;align-items:center;gap:7px;height:38px}
-button{background:#194c58;color:#f0f8fa;border:1px solid #347281;border-radius:6px;padding:7px 11px;cursor:pointer;white-space:nowrap}
-button:hover{background:#246576}button:focus-visible,input:focus-visible{outline:2px solid #6bd0ed}
-input{flex:1;min-width:130px;background:#0c1418;color:#f4f9fa;border:1px solid #42636c;border-radius:6px;padding:8px}
-small{color:#b7d0d6;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-dialog{position:fixed;top:102px;left:50%;transform:translateX(-50%);margin:0;width:min(620px,calc(100vw - 32px));max-height:250px;background:#12252b;color:#f0f8fa;border:1px solid #4c8391;border-radius:12px;padding:22px;box-shadow:0 18px 65px #0009}dialog::backdrop{background:#000a}dialog h2{font-size:20px;margin:0 0 14px}dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;font:14px system-ui,Segoe UI,sans-serif}dialog .actions{text-align:right;margin-top:16px}button:disabled{opacity:.5;cursor:not-allowed}
+:root{color-scheme:dark;font:13px 'Segoe UI',Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:#041d24;color:#d1e5e2;overflow:hidden}
+button,input{font:inherit}
+#tabrow{height:41px;background:#062830;border-bottom:1px solid #104852;display:flex;align-items:flex-end;padding:0 12px;gap:4px;white-space:nowrap}
+#tabs{display:flex;align-items:flex-end;gap:4px;overflow-x:auto;max-width:calc(100% - 50px);scrollbar-width:thin}
+.tab{background:#0c3843;color:#b5e8e7;border:1px solid #23606a;border-bottom:0;min-width:96px;max-width:210px;padding:8px 10px 8px 14px;border-radius:11px 11px 0 0;margin-top:3px;display:flex;align-items:center;gap:8px;cursor:pointer}
+.tab.active{background:#0c4852;color:#fff;border-color:#18c6c6;font-weight:600;margin-top:1px}
+.tab:hover:not(.active){background:#14505d}
+.tab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tab .x{padding:0 4px;background:none;color:#d5efee;border:0;cursor:pointer;font-weight:650}
+.tab .x:hover{color:#fff;background:#1f6a73;border-radius:9px}
+#newtab{font-size:22px;min-width:28px;padding:4px 8px}
+#toolbar{height:50px;background:#082c36;border-bottom:1px solid #126a72;display:flex;align-items:center;gap:5px;padding:5px 10px;white-space:nowrap}
+#toolbar button,#newtab{color:#b9faf4;font-size:16px;padding:6px;border-radius:7px;border:0;background:transparent;cursor:pointer}
+#toolbar button:hover,#newtab:hover{background:#14515a}
+#toolbar button:disabled{opacity:.35;cursor:default}
+#address{flex:1;min-width:170px;background:#0c3944;color:#f5ffff;border:1px solid #258d99;border-radius:13px;padding:8px 13px;font-size:13px;height:34px}
+#address:focus{outline:none;border:2px solid #21e2d2}
+#toolbar #shield{color:#8cfbe0;font-size:12px;font-weight:600}
+#toolbar #vpn{background:#0a3f49;color:#affbf1;border:1px solid #168d8c;font-size:12px;padding:7px 9px;font-weight:600}
+#toolbar #downloads,#toolbar #bandwidth{font-size:12px}
+#status{height:22px;background:#0b2b2e;color:#d1e5e2;padding:3px 12px;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#panel{position:absolute;top:113px;left:10px;width:min(680px,calc(100vw - 20px));height:400px;border:1px solid #1b858a;background:#082a34;color:#ddfbf8;border-radius:12px;box-shadow:0 10px 35px #0009;padding:14px;display:none;overflow:auto;z-index:50}
+#panel.visible{display:block}
+#panelheader{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+#panelheader h2{margin:0;font-size:19px;font-weight:600}
+#panel button{background:#0b4854;border:1px solid #168d8c;color:#e2fbf8;border-radius:8px;padding:8px 12px;cursor:pointer}
+#panel button:hover{background:#16616b}
+#panel button.danger{border-color:#a94452;background:#54232d}
+#panel input{width:100%;background:#0c3944;border:1px solid #258d99;border-radius:9px;color:#fff;padding:9px}
+#panel label{display:block;margin:12px 0 6px}
+#panel .entry{display:flex;gap:9px;align-items:center;padding:7px 2px;border-bottom:1px solid #21505a}
+#panel .entry .caption{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#panel .row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0}
+#panel .muted{color:#b1d4d3;font-size:12px;line-height:1.5}
+#panel .notice{padding:10px;border:1px solid #3d7e8a;background:#103741;border-radius:8px}
+#panel .entry button{padding:5px 8px}
 </style></head>
 <body>
-<header><div class="toolbar">
-<button id="back" title="Zurück">←</button><button id="forward" title="Vorwärts">→</button>
-<button id="reload" title="Neu laden">↻</button><button id="home">Start</button>
-<input id="address" aria-label="Webadresse" spellcheck="false" placeholder="HTTPS-Adresse oder Suchbegriff"/>
-<button id="go">Öffnen</button><button id="diagnose">Video/DRM prüfen</button>
-</div><small id="status">Widevine wird initialisiert. Dies ist ein getrennter Techniktest, kein Ersatz für Vaultie 4.2.</small></header>
-<dialog id="diagnostics" aria-labelledby="diagnostics-title">
-<h2 id="diagnostics-title">Video- und DRM-Prüfung</h2>
-<pre id="diagnostics-result" aria-live="polite">Prüfung startet …</pre>
-<div class="actions"><button id="diagnostics-close">Schließen</button></div>
-</dialog>
+<div id="tabrow"><div id="tabs"></div><button id="newtab" title="Neuer Tab (Strg+T)">+</button></div>
+<div id="toolbar">
+<button id="back" title="Zurück (Alt+Links)">←</button>
+<button id="forward" title="Vorwärts (Alt+Rechts)">→</button>
+<button id="reload" title="Neu laden (Strg+R)">↻</button>
+<button id="home" title="Startseite">⌂</button>
+<input id="address" placeholder="Webadresse eingeben oder suchen" aria-label="Webadresse"/>
+<button id="bookmark" title="Lesezeichen speichern (Strg+D)">☆</button>
+<button id="bookmarks" title="Lesezeichen verwalten">★</button>
+<button id="logins" title="Zugangsdaten">🔑</button>
+<button id="shield" title="Werbe- und Trackerschutz">◆ Schutz aktiv</button>
+<button id="bandwidth" title="Bandbreitenlimit">∞ Mbit/s</button>
+<button id="vpn" title="VPN-Empfehlungen">VPN ▾</button>
+<button id="downloads" title="Downloads">↓ Downloads</button>
+<button id="menu" title="Menü und Einstellungen">☰</button>
+</div>
+<div id="status">Vaultie – lokaler Browser</div>
+<section id="panel" aria-label="Vaultie-Funktionen">
+<div id="panelheader"><h2 id="paneltitle">Vaultie</h2><button id="closepanel" aria-label="Schließen">Schließen ×</button></div>
+<div id="panelbody"></div>
+</section>
 <script src="./toolbar.js"></script>
 </body></html>
