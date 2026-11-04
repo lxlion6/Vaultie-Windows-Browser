@@ -25,49 +25,19 @@ jobs:
     steps:
       - name: Quellcode laden
         uses: actions/checkout@v4
-      - name: Python bereitstellen
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          architecture: x64
       - name: .NET 8 für WebView2 bereitstellen
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Lokalen Bandbreitenbegrenzer testen
-        shell: pwsh
-        run: |
-          python -m py_compile browser.py bandwidth_proxy.py storage_manager.py credentials.py
-          node --check assets/fingerprint.js
-          if ($LASTEXITCODE -ne 0) { throw 'Fingerprint-Skript hat Syntaxfehler' }
-          python -m unittest -v test_bandwidth_proxy test_storage_manager test_credentials
-          if ($LASTEXITCODE -ne 0) { throw 'Bandbreitenbegrenzer-Test fehlgeschlagen' }
-      - name: Bibliotheken installieren
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install pip-audit
-          python -m pip_audit --local
-          if ($LASTEXITCODE -ne 0) { throw 'Paket-Schwachstellenprüfung fehlgeschlagen' }
-      - name: Vaultie kompilieren
-        shell: pwsh
-        run: |
-          python -m PyInstaller --noconfirm --clean --windowed --name Vaultie `
-            --icon assets/vaultie.ico `
-            --add-data "assets;assets" `
-            --collect-all PySide6.QtWebEngineCore `
-            --collect-all PySide6.QtWebEngineWidgets `
-            browser.py
-          if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Programmdatei fehlt' }
-      - name: Native Windows-Medien-Engine erstellen
+      - name: Eine Browser-Engine für alle Webseiten erstellen
         shell: pwsh
         run: |
           dotnet publish Streaming/Vaultie.Streaming.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o Streaming/publish
-          if ($LASTEXITCODE -ne 0) { throw 'WebView2-Streaming-Build fehlgeschlagen' }
-          if (-not (Test-Path 'Streaming/publish/Vaultie.Streaming.exe')) { throw 'WebView2-EXE fehlt' }
-          Copy-Item 'Streaming/publish/*' 'dist/Vaultie/' -Recurse -Force
-          if (-not (Test-Path 'dist/Vaultie/Vaultie.Streaming.exe')) { throw 'WebView2-EXE fehlt im Installer' }
+          if ($LASTEXITCODE -ne 0) { throw 'Vaultie WebView2-Build fehlgeschlagen' }
+          if (-not (Test-Path 'Streaming/publish/Vaultie.Streaming.exe')) { throw 'Browser-EXE fehlt' }
+          New-Item -ItemType Directory -Force 'dist/Vaultie' | Out-Null
+          Copy-Item 'Streaming/publish/Vaultie.Streaming.exe' 'dist/Vaultie/Vaultie.exe' -Force
+          if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Installer-Browser fehlt' }
       - name: Installer erstellen
         shell: pwsh
         run: |
