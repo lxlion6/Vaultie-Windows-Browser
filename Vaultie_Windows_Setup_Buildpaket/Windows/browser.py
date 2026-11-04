@@ -82,8 +82,21 @@ HIDDEN_SHORTCUTS = DATA / "hidden_shortcuts.json"
 HISTORY = DATA / "history.json"
 CREDENTIALS = DATA / "credentials.dat"
 FILTERS = DATA / "filterliste.txt"
-DOWNLOADS = DATA / "Downloads"
-DOWNLOADS.mkdir(parents=True, exist_ok=True)
+def download_directory():
+    """Default to the user's ordinary Windows Downloads directory."""
+    location = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.DownloadLocation)
+    folder = Path(location) if location else DATA / "Downloads"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+    except OSError:
+        fallback = DATA / "Downloads"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+DOWNLOADS = download_directory()
 
 def read_json(path, default):
     try:
@@ -238,8 +251,7 @@ class BrowserPage(QWebEnginePage):
                 except (ValueError, IndexError):
                     pass
             elif action == "downloads":
-                self.window.show_data_folder()
-                QMessageBox.information(self.window, "Downloads", "Heruntergeladene Dateien werden im von dir gewählten Ordner gespeichert.")
+                self.window.show_downloads()
             elif action == "privacy":
                 self.window.show_security_notes()
             elif action == "history":
@@ -399,6 +411,8 @@ class Browser(QMainWindow):
         if not isinstance(self.history, list):
             self.history = []
         self.session_downloads = []
+        self.download_items = []
+        self.downloads_dialog = None
         self.cleaned_tracking_parameters = 0
         # Off-the-record Qt WebEngine: cookies, HTTP cache, website storage
         # and browser-side login sessions are discarded on exit.
@@ -601,6 +615,9 @@ class Browser(QMainWindow):
         vpn_button.setMenu(vpn_menu)
         vpn_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bar.addWidget(vpn_button)
+        self.download_button = self.toolbar_button(
+            bar, "↓ Downloads", self.show_downloads,
+            "Downloads, Fortschritt und Speicherordner anzeigen")
         self.menu_button = QToolButton(self)
         self.menu_button.setText("☰")
         self.menu_button.setToolTip("Menü und Einstellungen")
@@ -1393,39 +1410,116 @@ class Browser(QMainWindow):
         refresh()
         dialog.exec()
 
+    def download_label(self, entry):
+        item = entry["request"]
+        path = entry["path"]
+        try:
+            state = item.state()
+            if state == QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
+                status = "Fertig"
+            elif state == QWebEngineDownloadRequest.DownloadState.DownloadCancelled:
+                status = "Abgebrochen"
+            elif state == QWebEngineDownloadRequest.DownloadState.DownloadInterrupted:
+                status = "Fehler"
+            else:
+                received = item.receivedBytes()
+                total = item.totalBytes()
+                if total > 0:
+                    status = f"{received * 100 // total}% ({received // 1048576} / {total // 1048576} MB)"
+                else:
+                    status = f"{received // 1048576} MB empfangen"
+        except RuntimeError:
+            status = "Status unbekannt"
+        return f"{path.name} — {status}"
+
+    def refresh_downloads(self):
+        button = getattr(self, "download_button", None)
+        active = 0
+        for entry in self.download_items:
+            try:
+                if entry["request"].state() == QWebEngineDownloadRequest.DownloadState.DownloadInProgress:
+                    active += 1
+            except RuntimeError:
+                pass
+        if button is not None:
+            button.setText(f"↓ Downloads ({active})" if active else "↓ Downloads")
+        if self.downloads_dialog is not None and self.downloads_dialog.isVisible():
+            widget = self.downloads_dialog.findChild(QListWidget, "downloadList")
+            if widget:
+                current = widget.currentRow()
+                widget.clear()
+                for entry in self.download_items:
+                    widget.addItem(self.download_label(entry))
+                if 0 <= current < widget.count():
+                    widget.setCurrentRow(current)
+
     def show_downloads(self):
+        if self.downloads_dialog is not None and self.downloads_dialog.isVisible():
+            self.downloads_dialog.raise_()
+            self.downloads_dialog.activateWindow()
+            return
         dialog = QDialog(self)
-        dialog.setWindowTitle("Downloads dieser Sitzung")
-        dialog.resize(650, 340)
+        dialog.setWindowTitle("Vaultie – Downloads")
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.resize(700, 380)
+        self.downloads_dialog = dialog
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Dateien bleiben in den von dir gewählten lokalen Ordnern."))
+        layout.addWidget(QLabel(f"Speicherort: {DOWNLOADS}"))
         items = QListWidget(dialog)
-        items.addItems(self.session_downloads)
+        items.setObjectName("downloadList")
         layout.addWidget(items)
         row = QHBoxLayout()
 
+        def selected():
+            index = items.currentRow()
+            if 0 <= index < len(self.download_items):
+                return self.download_items[index]
+            return None
+
         def open_selected():
-            item = items.currentItem()
-            if item and Path(item.text()).exists():
-                if sys.platform == "win32":
-                    os.startfile(item.text())
-            elif item:
-                QMessageBox.warning(dialog, "Download", "Die ausgewählte Datei wurde nicht gefunden.")
+            entry = selected()
+            if not entry:
+                return
+            path = entry["path"]
+            if not path.is_file():
+                QMessageBox.warning(dialog, "Download", "Datei ist noch nicht fertig oder nicht vorhanden.")
+                return
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
         def show_folder():
-            item = items.currentItem()
-            if item and sys.platform == "win32":
-                parent = Path(item.text()).parent
-                if parent.is_dir():
-                    os.startfile(str(parent))
+            entry = selected()
+            folder = entry["path"].parent if entry else DOWNLOADS
+            if sys.platform == "win32":
+                os.startfile(str(folder))
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
-        for label, handler in (("Datei öffnen", open_selected),
-                               ("Ordner öffnen", show_folder),
-                               ("Schließen", dialog.reject)):
+        def cancel_selected():
+            entry = selected()
+            if not entry:
+                return
+            req = entry["request"]
+            if req.state() == QWebEngineDownloadRequest.DownloadState.DownloadInProgress:
+                req.cancel()
+
+        for label, callback in (
+                ("Datei öffnen", open_selected),
+                ("Ordner öffnen", show_folder),
+                ("Download abbrechen", cancel_selected),
+                ("Schließen", dialog.close)):
             button = QPushButton(label, dialog)
-            button.clicked.connect(handler)
+            button.clicked.connect(callback)
             row.addWidget(button)
         layout.addLayout(row)
+        timer = QTimer(dialog)
+        timer.setInterval(400)
+        timer.timeout.connect(self.refresh_downloads)
+        timer.start()
+        dialog.destroyed.connect(lambda: setattr(self, "downloads_dialog", None))
+        self.refresh_downloads()
         dialog.exec()
 
     def toggle_tracking_parameters(self):
@@ -1641,21 +1735,28 @@ class Browser(QMainWindow):
             "Lesezeichen und Einstellungen bleiben erhalten.")
 
     def download_requested(self, item: QWebEngineDownloadRequest):
-        # Downloads are user files and entirely outside the internal browser
-        # storage budget. Never cancel them because of the 5 GB threshold.
+        """Accept real Qt downloads into the normal Downloads folder."""
         suggested = Path(item.downloadFileName() or "download").name
         if not suggested or suggested in (".", ".."):
             suggested = "download"
         output = DOWNLOADS / suggested
         stem, suffix = output.stem, output.suffix
         counter = 1
-        while output.exists():
+        reserved = {entry["path"] for entry in self.download_items}
+        while output.exists() or output in reserved:
             output = DOWNLOADS / f"{stem}-{counter}{suffix}"
             counter += 1
         item.setDownloadDirectory(str(DOWNLOADS))
         item.setDownloadFileName(output.name)
-        item.accept()
+        self.download_items.append({"request": item, "path": output})
         self.session_downloads.append(str(output))
+        item.receivedBytesChanged.connect(self.refresh_downloads)
+        item.totalBytesChanged.connect(self.refresh_downloads)
+        item.stateChanged.connect(self.refresh_downloads)
+        item.accept()
+        self.refresh_downloads()
+        self.statusBar().showMessage(f"Download gestartet: {output.name}", 5000)
+
 
 def main():
     config = configuration()
