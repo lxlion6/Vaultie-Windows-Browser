@@ -346,7 +346,6 @@ class Browser(QMainWindow):
         self.config = config
         self.bandwidth_proxy = bandwidth_proxy
         self.storage = StorageBudget(DATA)
-        self.active_downloads = set()
         self.storage_warning_shown = False
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 820)
@@ -858,41 +857,33 @@ class Browser(QMainWindow):
         before, after, freed = self.storage.check()
         if before >= CLEAN_AT and freed > 0:
             self.statusBar().showMessage(
-                f"Lokale Daten bereinigt: {freed / (1024 ** 2):.1f} MiB freigegeben.", 5000)
+                f"Browser-Cache bereinigt: {freed / (1024 ** 2):.1f} MiB freigegeben.", 5000)
         if after >= HARD_LIMIT and not self.storage_warning_shown:
             self.storage_warning_shown = True
             QMessageBox.warning(
-                self, "Vaultie - lokaler Speicher",
-                "Die lokale 5-GB-Grenze wurde erreicht. Neue Downloads werden "
-                "abgelehnt. Lesezeichen, Einstellungen und bereits heruntergeladene "
-                "Dateien werden aus Sicherheitsgründen nicht automatisch gelöscht. "
-                "Bitte entferne nicht mehr benötigte Downloads im lokalen Datenordner.")
+                self, "Vaultie - Browser-Speicher",
+                "Der interne Browser-Speicher liegt bei mindestens 5 GB. "
+                "Automatisch entfernbare Cache-Dateien wurden bereinigt. "
+                "Verbleibende Daten können nicht immer während des Betriebs "
+                "entfernt werden. Downloads sind von dieser Grenze vollständig "
+                "ausgenommen und bleiben uneingeschränkt möglich.")
         elif after < HARD_LIMIT:
             self.storage_warning_shown = False
 
     def show_storage_status(self):
         before, after, freed = self.storage.check(force=True)
         QMessageBox.information(
-            self, "Vaultie - lokaler Speicher",
-            f"Belegt: {after / GIB:.2f} GB von 5,00 GB.\\n"
-            f"Automatische Bereinigung ab: {CLEAN_AT / GIB:.2f} GB.\\n"
-            f"Bei dieser Prüfung bereinigt: {freed / (1024 ** 2):.1f} MiB.\\n"
-            "Kontrolle automatisch einmal pro Minute und vor jedem Download.\\n"
-            "Lesezeichen, Einstellungen und Downloads werden nicht ungefragt gelöscht.")
+            self, "Vaultie - Browser-Speicher",
+            f"Browser-Daten: {after / GIB:.2f} GB von 5,00 GB.\n"
+            f"Automatische Bereinigung ab: {CLEAN_AT / GIB:.2f} GB.\n"
+            f"Bei dieser Prüfung bereinigt: {freed / (1024 ** 2):.1f} MiB.\n"
+            "Prüfung automatisch jede Minute.\n"
+            "Downloads werden NICHT mitgerechnet, begrenzt oder gelöscht.\n"
+            "Lesezeichen und Einstellungen bleiben erhalten.")
 
     def download_requested(self, item: QWebEngineDownloadRequest):
-        # Enforce the budget on new browser downloads. Personal files are never
-        # silently removed merely to make room.
-        expected = item.totalBytes()
-        if not self.storage.can_download(expected):
-            item.cancel()
-            self.check_storage_budget()
-            QMessageBox.warning(
-                self, "Vaultie - Download abgelehnt",
-                "Die lokale Speichergrenze beträgt 5 GB. Für diesen Download "
-                "ist nicht genügend Platz im Vaultie-Datenordner vorhanden. "
-                "Entferne zuerst nicht benötigte Downloads.")
-            return
+        # Downloads are user files and entirely outside the internal browser
+        # storage budget. Never cancel them because of the 5 GB threshold.
         suggested = Path(item.downloadFileName() or "download").name
         if not suggested or suggested in (".", ".."):
             suggested = "download"
@@ -904,23 +895,8 @@ class Browser(QMainWindow):
             counter += 1
         item.setDownloadDirectory(str(DOWNLOADS))
         item.setDownloadFileName(output.name)
-        self.active_downloads.add(item)
-        item.receivedBytesChanged.connect(self.monitor_download_storage)
-        item.stateChanged.connect(lambda _state, task=item: self.finish_download(task))
         item.accept()
         self.session_downloads.append(str(output))
-
-    def monitor_download_storage(self):
-        # Unknown-size downloads and overlapping downloads are checked while
-        # receiving data, not only against any reported Content-Length.
-        if self.storage.size() >= HARD_LIMIT:
-            for item in list(self.active_downloads):
-                item.cancel()
-            self.check_storage_budget()
-
-    def finish_download(self, task):
-        self.active_downloads.discard(task)
-        self.check_storage_budget()
 
 def main():
     config = configuration()
