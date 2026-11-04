@@ -1,0 +1,37 @@
+{
+  "name": "vaultie-drm-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated castLabs Electron Widevine evaluation - not Vaultie production",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js && node --check preload.js && node --check toolbar.js",
+    "package": "electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "github:castlabs/electron-releases#v44.9.3+wvcus",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "de.vaultie.drmtest",
+    "productName": "Vaultie DRM Test",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "toolbar.js",
+      "toolbar.html",
+      "package.json"
+    ],
+    "directories": {
+      "output": "output"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "win": {
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}
