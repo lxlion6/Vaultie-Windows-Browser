@@ -61,7 +61,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = 'windows-latest'
-          $installer = 'Vaultie_Windows_Setup_Buildpaket/Windows/installer_output/Vaultie-Setup.exe'
+          $installer = 'installer_output/Vaultie-Setup.exe'
           if (-not (Test-Path $installer)) { throw 'Installer nicht vorhanden' }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
