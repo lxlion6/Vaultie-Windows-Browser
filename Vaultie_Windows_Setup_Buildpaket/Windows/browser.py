@@ -312,6 +312,9 @@ class Browser(QMainWindow):
                      "HyperlinkAuditingEnabled", "DnsPrefetchEnabled",
                      "JavascriptCanOpenWindows", "ScreenCaptureEnabled"):
             privacy.setAttribute(getattr(attributes, name), False)
+        # Limit WebRTC exposure of private LAN interface addresses.
+        # This does not hide the public IP address or provide a VPN.
+        privacy.setAttribute(attributes.WebRTCPublicInterfacesOnly, True)
         # Do not start an internal spell-check network service.
         self.profile.setSpellCheckEnabled(False)
         self.blocker = AdBlocker(config["adblock"], self)
