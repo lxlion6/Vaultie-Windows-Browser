@@ -28,7 +28,7 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
-APP_VERSION = "2.9"
+APP_VERSION = "3.0"
 RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
 DEFAULT_SHORTCUTS = (
@@ -155,6 +155,12 @@ def preconfigure_chromium(proxy_port):
             "--no-pings", "--disable-features=MediaRouter",
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             f"--proxy-server=http://127.0.0.1:{proxy_port}"]
+    # Widevine is not bundled. Accept only an existing, user-selected DLL.
+    cdm = read_json(SETTINGS, {}).get("widevine_path", "")
+    if (sys.platform == "win32" and isinstance(cdm, str)
+            and Path(cdm).name.lower() == "widevinecdm.dll"
+            and Path(cdm).is_file()):
+        args.append('--widevine-path="' + Path(cdm).as_posix() + '"')
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(args)
 
 
@@ -432,6 +438,7 @@ class Browser(QMainWindow):
         self.profile.cookieStore().setCookieFilter(self.cookie_filter)
         privacy = self.profile.settings()
         attributes = QWebEngineSettings.WebAttribute
+        privacy.setAttribute(attributes.FullScreenSupportEnabled, True)
         for name in ("LocalContentCanAccessRemoteUrls", "LocalContentCanAccessFileUrls",
                      "JavascriptCanAccessClipboard", "JavascriptCanPaste",
                      "HyperlinkAuditingEnabled", "DnsPrefetchEnabled",
@@ -603,6 +610,8 @@ class Browser(QMainWindow):
         menu.addAction("Gespeichertes Login jetzt ausfüllen", self.fill_current_login)
         menu.addAction("Gespeicherte Logins verwalten", self.show_saved_logins)
         menu.addAction("Auf Updates prüfen", self.check_for_updates_manual)
+        menu.addAction("Video-Codecs und DRM prüfen", self.show_video_diagnostics)
+        menu.addAction("Lokale Widevine-Datei wählen", self.choose_widevine_binary)
         menu.addAction("Downloads anzeigen", self.show_downloads)
         menu.addAction("Lokalen Speicher prüfen / bereinigen", self.show_storage_status)
         menu.addAction("Bandbreitenlimit (3-25 Mbit/s)", self.show_bandwidth_dialog)
@@ -780,6 +789,8 @@ class Browser(QMainWindow):
         view = QWebEngineView(self)
         page = BrowserPage(self.profile, self, view)
         view.setPage(page)
+        page.fullScreenRequested.connect(lambda request, v=view:
+                                         self.handle_fullscreen_request(request, v))
         view.titleChanged.connect(lambda title, v=view: self.set_tab_title(v, title))
         view.loadFinished.connect(lambda ok, v=view: self.record_history(v) if ok else None)
         view.loadFinished.connect(lambda ok, v=view: self.schedule_login_fill(v) if ok else None)
@@ -794,6 +805,80 @@ class Browser(QMainWindow):
         elif url:
             view.setUrl(QUrl(url))
         return view
+
+    def handle_fullscreen_request(self, request, view):
+        """Enable Qt fullscreen transitions for HTML5 players."""
+        request.accept()
+        if request.toggleOn():
+            self.showFullScreen()
+        else:
+            self.showNormal()
+
+    def choose_widevine_binary(self):
+        """Specify a locally installed CDM, without copying or distributing it."""
+        if sys.platform != "win32":
+            QMessageBox.information(self, "Widevine", "Nur unter Windows verfügbar.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Vorhandene Widevine-DLL auswählen", "",
+            "Widevine (widevinecdm.dll)")
+        if not path:
+            return
+        if Path(path).name.lower() != "widevinecdm.dll" or not Path(path).is_file():
+            QMessageBox.warning(self, "Widevine", "Nur eine vorhandene widevinecdm.dll auswählen.")
+            return
+        saved = read_json(SETTINGS, {})
+        saved["widevine_path"] = path
+        write_json(SETTINGS, saved)
+        QMessageBox.information(self, "Widevine",
+            "Die Datei ist für den nächsten Vaultie-Start vorgemerkt. "
+            "Eine Freigabe durch Streamingdienste ist dadurch nicht garantiert.")
+
+    def show_video_diagnostics(self):
+        """Probe HTML5 codec support and EME on the active HTTPS page."""
+        view = self.current()
+        if not view or view.url().scheme() != "https":
+            QMessageBox.information(self, "Video-Diagnose",
+                "Öffne zunächst eine HTTPS-Webseite und starte die Prüfung erneut.")
+            return
+        script = """
+        (async () => {
+          const video = document.createElement("video");
+          const can = codec => video.canPlayType(codec) || "nein";
+          const h264 = can('video/mp4; codecs="avc1.42E01E"');
+          const aac = can('audio/mp4; codecs="mp4a.40.2"');
+          const combined = can('video/mp4; codecs="avc1.42E01E, mp4a.40.2"');
+          const webm = can('video/webm; codecs="vp9, opus"');
+          let drm = "EME nicht vorhanden";
+          if (navigator.requestMediaKeySystemAccess) {
+            try {
+              await navigator.requestMediaKeySystemAccess("com.widevine.alpha", [{
+                initDataTypes: ["cenc"],
+                audioCapabilities: [{contentType: 'audio/mp4; codecs="mp4a.40.2"'}],
+                videoCapabilities: [{contentType: 'video/mp4; codecs="avc1.42E01E"'}]
+              }]);
+              drm = "Widevine-API verfügbar";
+            } catch (error) {
+              drm = "Widevine nicht verfügbar: " + (error.name || "unbekannt");
+            }
+          }
+          return {h264, aac, combined, webm, drm};
+        })()
+        """
+        view.page().runJavaScript(script, self.display_video_diagnostics)
+
+    def display_video_diagnostics(self, result):
+        if not isinstance(result, dict):
+            QMessageBox.warning(self, "Video-Diagnose", "Keine Messwerte erhalten.")
+            return
+        parts = ["H.264: " + str(result.get("h264", "unbekannt")),
+                 "AAC: " + str(result.get("aac", "unbekannt")),
+                 "MP4 H.264/AAC: " + str(result.get("combined", "unbekannt")),
+                 "WebM VP9/Opus: " + str(result.get("webm", "unbekannt")),
+                 "DRM: " + str(result.get("drm", "unbekannt")),
+                 "",
+                 "Dies ist ein Funktionstest, keine Zusage für Prime Video."]
+        QMessageBox.information(self, "Video- und DRM-Diagnose", "\n".join(parts))
 
     def set_tab_title(self, view, title):
         index = self.tabs.indexOf(view)
