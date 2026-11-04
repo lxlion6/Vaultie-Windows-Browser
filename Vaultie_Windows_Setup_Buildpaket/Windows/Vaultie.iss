@@ -1,5 +1,5 @@
 #define MyAppName "Vaultie"
-#define MyAppVersion "1.9"
+#define MyAppVersion "2.0"
 #define MyAppPublisher "Vaultie"
 #define MyAppExeName "Vaultie.exe"
 
