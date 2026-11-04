@@ -12,7 +12,7 @@ from PySide6.QtCore import QStandardPaths, Qt, QUrl
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QTabBar, QStackedWidget, QToolBar, QToolButton,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QListWidget, QTabBar, QStackedWidget, QToolBar, QToolButton,
     QVBoxLayout, QWidget, QSizePolicy)
 from PySide6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEnginePage,
     QWebEngineProfile, QWebEngineSettings, QWebEngineUrlRequestInterceptor)
@@ -96,7 +96,11 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
     # Minimal blocker; importable host lists below improve coverage.
     PATTERNS = ("doubleclick.net", "googlesyndication.com", "googleadservices.com",
                 "adnxs.com", "taboola.com", "outbrain.com", "scorecardresearch.com",
-                "adsrvr.org", "criteo.com", "amazon-adsystem.com", "yieldmo.com")
+                "adsrvr.org", "criteo.com", "amazon-adsystem.com", "yieldmo.com",
+                "casalemedia.com", "rubiconproject.com", "pubmatic.com", "openx.net",
+                "smartadserver.com", "bidswitch.net", "quantserve.com", "moatads.com",
+                "demdex.net", "advertising.com", "media.net", "lijit.com",
+                "serving-sys.com", "3lift.com", "teads.tv")
 
     def __init__(self, enabled=True, parent=None):
         super().__init__(parent)
@@ -285,6 +289,7 @@ class Browser(QMainWindow):
         if icon.exists():
             self.setWindowIcon(QIcon(str(icon)))
         self.bookmarks = read_json(BOOKMARKS, [])
+        self.session_downloads = []
         # Off-the-record Qt WebEngine profile by default: website cookies,
         # cache and storage remain in memory and are discarded on exit.
         # User-owned settings/bookmarks remain on disk, never uploaded by us.
@@ -402,7 +407,8 @@ class Browser(QMainWindow):
         self.menu_button.setText("☰")
         self.menu_button.setToolTip("Menü und Einstellungen")
         menu = QMenu(self)
-        menu.addAction("Lesezeichen", self.show_bookmarks)
+        menu.addAction("Lesezeichen verwalten", self.show_bookmarks)
+        menu.addAction("Downloads anzeigen", self.show_downloads)
         menu.addAction("Werbeblocker umschalten", self.toggle_blocker)
         menu.addAction("Filterliste importieren", self.import_filters)
         menu.addAction("Drittanbieter-Cookies umschalten", self.toggle_third_party_cookies)
@@ -537,14 +543,78 @@ class Browser(QMainWindow):
             self.statusBar().showMessage("Lesezeichen gespeichert", 3000)
 
     def show_bookmarks(self):
-        choices = [f"{x.get('title', '')} — {x.get('url', '')}" for x in self.bookmarks]
-        if not choices:
-            QMessageBox.information(self, "Lesezeichen", "Noch keine Lesezeichen gespeichert.")
-            return
-        item, ok = QInputDialog.getItem(self, "Lesezeichen", "Seite öffnen:", choices, 0, False)
-        if ok and item:
-            index = choices.index(item)
-            self.current().setUrl(QUrl(self.bookmarks[index]["url"]))
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Lokale Lesezeichen")
+        dialog.resize(650, 400)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Lesezeichen werden ausschließlich auf diesem PC gespeichert."))
+        items = QListWidget(dialog)
+        layout.addWidget(items)
+
+        def refresh():
+            items.clear()
+            for entry in self.bookmarks:
+                items.addItem(f"{entry.get('title', 'Webseite')}  —  {entry.get('url', '')}")
+
+        def open_selected():
+            index = items.currentRow()
+            if 0 <= index < len(self.bookmarks):
+                self.current().setUrl(QUrl(self.bookmarks[index]["url"]))
+                dialog.accept()
+
+        def remove_selected():
+            index = items.currentRow()
+            if 0 <= index < len(self.bookmarks):
+                del self.bookmarks[index]
+                write_json(BOOKMARKS, self.bookmarks)
+                refresh()
+
+        row = QHBoxLayout()
+        for label, handler in (("Öffnen", open_selected),
+                               ("Entfernen", remove_selected),
+                               ("Schließen", dialog.reject)):
+            button = QPushButton(label, dialog)
+            button.clicked.connect(handler)
+            row.addWidget(button)
+        layout.addLayout(row)
+        items.itemDoubleClicked.connect(lambda _item: open_selected())
+        refresh()
+        dialog.exec()
+
+    def show_downloads(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Downloads dieser Sitzung")
+        dialog.resize(650, 340)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Dateien bleiben in den von dir gewählten lokalen Ordnern."))
+        items = QListWidget(dialog)
+        items.addItems(self.session_downloads)
+        layout.addWidget(items)
+        row = QHBoxLayout()
+
+        def open_selected():
+            item = items.currentItem()
+            if item and Path(item.text()).exists():
+                if sys.platform == "win32":
+                    os.startfile(item.text())
+            elif item:
+                QMessageBox.warning(dialog, "Download", "Die ausgewählte Datei wurde nicht gefunden.")
+
+        def show_folder():
+            item = items.currentItem()
+            if item and sys.platform == "win32":
+                parent = Path(item.text()).parent
+                if parent.is_dir():
+                    os.startfile(str(parent))
+
+        for label, handler in (("Datei öffnen", open_selected),
+                               ("Ordner öffnen", show_folder),
+                               ("Schließen", dialog.reject)):
+            button = QPushButton(label, dialog)
+            button.clicked.connect(handler)
+            row.addWidget(button)
+        layout.addLayout(row)
+        dialog.exec()
 
     def toggle_blocker(self):
         self.config["adblock"] = not self.config["adblock"]
@@ -628,6 +698,7 @@ class Browser(QMainWindow):
         item.setDownloadDirectory(str(output.parent))
         item.setDownloadFileName(output.name)
         item.accept()
+        self.session_downloads.append(str(output))
 
 
 def main():
