@@ -12,7 +12,7 @@ GIB = 1_000_000_000
 CLEAN_AT = 3_800_000_000
 HARD_LIMIT = 5_000_000_000
 TEMP_NAMES = ("cache", "Cache", "Code Cache", "GPUCache", "DawnCache",
-              "GrShaderCache", "blob_storage", "Service Worker")
+              "GrShaderCache")
 PRESERVE = frozenset(("Downloads", "settings.json", "bookmarks.json",
                       "filterliste.txt"))
 
