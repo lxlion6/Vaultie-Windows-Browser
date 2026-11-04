@@ -16,7 +16,7 @@ from PySide6.QtGui import QAction, QKeySequence, QIcon
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QMenu, QMessageBox, QPushButton, QListWidget, QTabBar, QStackedWidget, QToolBar, QToolButton, QSlider, QCheckBox,
-    QVBoxLayout, QWidget, QSizePolicy)
+    QVBoxLayout, QWidget, QSizePolicy, QStyle)
 from PySide6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEnginePage,
     QWebEngineProfile, QWebEngineSettings, QWebEngineUrlRequestInterceptor)
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -107,6 +107,7 @@ def configuration():
     config = {"adblock": True, "block_third_party_cookies": True,
               "strip_tracking_params": True,
               "bandwidth_enabled": False, "bandwidth_mbps": 10,
+              "clear_history_on_exit": False,
               "private_session": True, **saved}
     # Always use private session; a previous setting cannot enable disk-based browsing.
     config["private_session"] = True
@@ -478,7 +479,9 @@ class Browser(QMainWindow):
         self.address.returnPressed.connect(self.navigate)
         bar.addWidget(self.address)
         self.toolbar_button(bar, "☆", self.bookmark_current, "Lesezeichen speichern (Strg+D)")
-        self.toolbar_button(bar, "▣☆", self.show_bookmarks, "Alle Lesezeichen öffnen und verwalten")
+        folder = self.toolbar_button(bar, "★", self.show_bookmarks, "Lesezeichen-Ordner öffnen und verwalten")
+        folder.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        folder.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.adblock_button = self.toolbar_button(bar, "◆  Schutz aktiv", self.toggle_blocker,
             "Werbeblocker ein- oder ausschalten", "adblockState")
         self.refresh_blocker_status()
@@ -974,12 +977,22 @@ class Browser(QMainWindow):
             "Einige Login- oder Videodienste benoetigen Drittanbieter-Cookies.\n"
             "Die Aenderung gilt fuer neue Zugriffe.")
 
+    def set_history_auto_clear(self, enabled):
+        self.config["clear_history_on_exit"] = enabled
+        write_json(SETTINGS, self.config)
+
+    def closeEvent(self, event):
+        if self.config.get("clear_history_on_exit", False):
+            self.history.clear()
+            write_json(HISTORY, self.history)
+        super().closeEvent(event)
+
     def record_history(self, view):
         url = view.url().toString()
         if urlsplit(url).scheme not in ("http", "https"):
             return
         title = view.title() or url
-        if self.history and self.history[-1].get("url") == url:
+        if self.history and isinstance(self.history[-1], dict) and self.history[-1].get("url") == url:
             self.history[-1]["title"] = title
             self.history[-1]["visited"] = datetime.now().isoformat(timespec="seconds")
         else:
@@ -996,6 +1009,10 @@ class Browser(QMainWindow):
         dialog.resize(760, 460)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Zuletzt besuchte Seiten. Nur auf diesem PC gespeichert."))
+        auto_clear = QCheckBox("Lokalen Verlauf beim Beenden automatisch löschen")
+        auto_clear.setChecked(self.config.get("clear_history_on_exit", False))
+        auto_clear.toggled.connect(lambda checked: self.set_history_auto_clear(checked))
+        layout.addWidget(auto_clear)
         search = QLineEdit(dialog)
         search.setPlaceholderText("Im Verlauf suchen")
         layout.addWidget(search)
