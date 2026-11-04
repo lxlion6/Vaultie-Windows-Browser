@@ -874,7 +874,7 @@ class Browser(QMainWindow):
         before, after, freed = self.storage.check(force=True)
         QMessageBox.information(
             self, "Vaultie - lokaler Speicher",
-            f"Belegt: {after / GIB:.2f} GB von 5,00 GB (GiB-Basis).\\n"
+            f"Belegt: {after / GIB:.2f} GB von 5,00 GB.\\n"
             f"Automatische Bereinigung ab: {CLEAN_AT / GIB:.2f} GB.\\n"
             f"Bei dieser Prüfung bereinigt: {freed / (1024 ** 2):.1f} MiB.\\n"
             "Kontrolle automatisch einmal pro Minute und vor jedem Download.\\n"
