@@ -42,13 +42,27 @@ class StorageManagerTests(unittest.TestCase):
                     budget.check()
                     cleanup.assert_called_once()
 
-    def test_declines_download_above_limit(self):
+    def test_downloads_are_excluded_from_storage_count(self):
         with tempfile.TemporaryDirectory() as directory:
-            budget = sm.StorageBudget(directory)
-            with patch.object(budget, "check", return_value=(sm.HARD_LIMIT - 100, sm.HARD_LIMIT - 100, 0)):
-                self.assertFalse(budget.can_download(200))
-                self.assertTrue(budget.can_download(100))
-                self.assertTrue(budget.can_download(None))
+            root = Path(directory)
+            (root / "Downloads").mkdir()
+            (root / "Downloads" / "huge_video.mp4").write_bytes(b"x" * 10_000)
+            (root / "settings.json").write_bytes(b"abc")
+            budget = sm.StorageBudget(root)
+            self.assertEqual(budget.size(), 3)
+            before, after, removed = budget.check(force=True)
+            self.assertEqual((before, after, removed), (3, 3, 0))
+            self.assertEqual((root / "Downloads" / "huge_video.mp4").stat().st_size, 10_000)
+
+    def test_downloads_not_counted_towards_cleanup_threshold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Downloads").mkdir()
+            (root / "Downloads" / "large.bin").write_bytes(b"x" * 200)
+            budget = sm.StorageBudget(root)
+            with patch("storage_manager.clean_temporary") as cleanup:
+                budget.check()
+                cleanup.assert_not_called()
 
 
 if __name__ == "__main__":
