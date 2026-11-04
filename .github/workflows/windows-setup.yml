@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: vaultie-windows-release
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-2022
