@@ -34,6 +34,8 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile browser.py bandwidth_proxy.py storage_manager.py credentials.py
+          node --check assets/fingerprint.js
+          if ($LASTEXITCODE -ne 0) { throw 'Fingerprint-Skript hat Syntaxfehler' }
           python -m unittest -v test_bandwidth_proxy test_storage_manager test_credentials
           if ($LASTEXITCODE -ne 0) { throw 'Bandbreitenbegrenzer-Test fehlgeschlagen' }
       - name: Bibliotheken installieren
@@ -41,6 +43,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install pip-audit
+          python -m pip_audit --local
+          if ($LASTEXITCODE -ne 0) { throw 'Paket-Schwachstellenprüfung fehlgeschlagen' }
       - name: Vaultie kompilieren
         shell: pwsh
         run: |
@@ -81,3 +86,7 @@ jobs:
             gh release create $tag $installer --target $env:GITHUB_SHA --title 'Vaultie Windows - aktuelle Version' --notes 'Windows 11 Setup. Unsignierte Windows-Installationsdatei.' --prerelease
           }
           if ($LASTEXITCODE -ne 0) { throw 'GitHub Release Upload fehlgeschlagen' }
+          $versionLine = (Get-Content 'Vaultie.iss' | Select-String '^#define MyAppVersion').Line
+          if ($versionLine -notmatch '"([0-9.]+)"') { throw 'Version fehlt' }
+          gh release edit $tag --notes "Version: $($Matches[1])`nWindows 11 Setup. Unsignierte Installationsdatei."
+          if ($LASTEXITCODE -ne 0) { throw 'Release-Versionsmeldung fehlgeschlagen' }
