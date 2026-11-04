@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vaultie DRM-Test</title>
+<style>
+:root{color-scheme:dark;font:14px system-ui,Segoe UI,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:#101b20;color:#e5f3f6}
+header{height:92px;padding:8px 13px;border-bottom:1px solid #2a4851;display:flex;flex-direction:column;gap:7px}
+.toolbar{display:flex;align-items:center;gap:7px;height:38px}
+button{background:#194c58;color:#f0f8fa;border:1px solid #347281;border-radius:6px;padding:7px 11px;cursor:pointer;white-space:nowrap}
+button:hover{background:#246576}button:focus-visible,input:focus-visible{outline:2px solid #6bd0ed}
+input{flex:1;min-width:130px;background:#0c1418;color:#f4f9fa;border:1px solid #42636c;border-radius:6px;padding:8px}
+small{color:#b7d0d6;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+</style></head>
+<body>
+<header><div class="toolbar">
+<button id="back" title="Zurück">←</button><button id="forward" title="Vorwärts">→</button>
+<button id="reload" title="Neu laden">↻</button><button id="home">Start</button>
+<input id="address" aria-label="Webadresse" spellcheck="false" placeholder="HTTPS-Adresse oder Suchbegriff"/>
+<button id="go">Öffnen</button><button id="diagnose">Video/DRM prüfen</button>
+</div><small id="status">Widevine wird initialisiert. Dies ist ein getrennter Techniktest, kein Ersatz für Vaultie 4.2.</small></header>
+<script src="./toolbar.js"></script>
+</body></html>
