@@ -8,9 +8,9 @@ import os
 import shutil
 from pathlib import Path
 
-GIB = 1024 ** 3
-CLEAN_AT = int(3.8 * GIB)
-HARD_LIMIT = 5 * GIB
+GIB = 1_000_000_000
+CLEAN_AT = 3_800_000_000
+HARD_LIMIT = 5_000_000_000
 TEMP_NAMES = ("cache", "Cache", "Code Cache", "GPUCache", "DawnCache",
               "GrShaderCache", "blob_storage", "Service Worker")
 PRESERVE = frozenset(("Downloads", "settings.json", "bookmarks.json",
