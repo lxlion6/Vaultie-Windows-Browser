@@ -5,10 +5,29 @@ for (const name of ['back', 'forward', 'reload', 'home']) $(name).addEventListen
 function go() { run('navigate', $('address').value); }
 $('go').addEventListener('click', go);
 $('address').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+$('diagnostics-close').addEventListener('click', () => $('diagnostics').close());
 $('diagnose').addEventListener('click', async () => {
-  $('status').textContent = 'Video- und Widevine-Diagnose läuft auf der geöffneten HTTPS-Seite …';
-  const report = await run('drm');
-  if (report) $('status').textContent = 'H.264: ' + report.h264 + ' | AAC: ' + report.aac + ' | Widevine: ' + report.widevine + (report.error ? ' | ' + report.error : '');
+  const dlg = $('diagnostics');
+  const result = $('diagnostics-result');
+  result.textContent = 'Prüfe H.264, AAC und Widevine.\\nDie Abfrage wird nach spätestens 15 Sekunden beendet.';
+  if (!dlg.open) dlg.showModal();
+  $('diagnose').disabled = true;
+  try {
+    const report = await window.vaultie.command('drm');
+    if (!report) throw new Error('Keine Antwort von der Browser-Engine.');
+    if (report.error) {
+      result.textContent = 'Prüfung nicht abgeschlossen:\\n' + report.error;
+    } else {
+      result.textContent = 'H.264: ' + (report.h264 || 'nicht verfügbar') +
+        '\\nAAC: ' + (report.aac || 'nicht verfügbar') +
+        '\\nWidevine: ' + (report.widevine || 'nicht verfügbar') +
+        '\\n\\nHinweis: Eine positive Prüfung garantiert nicht, dass Prime Video Filme abspielt.';
+    }
+  } catch (err) {
+    result.textContent = 'Prüfung fehlgeschlagen:\\n' + String(err?.message || err);
+  } finally {
+    $('diagnose').disabled = false;
+  }
 });
 window.vaultie.onStatus(s => {
   if (document.activeElement !== $('address')) $('address').value = s.url || '';
