@@ -30,6 +30,12 @@ jobs:
         run: |
           npm run check
           if ($LASTEXITCODE -ne 0) { throw 'Syntaxpruefung fehlgeschlagen' }
+          Write-Host 'ECS package resolution and installed files:'
+          node -p "require.resolve('electron')"
+          node -p "JSON.stringify(require('./node_modules/electron/package.json'),null,2)"
+          Get-ChildItem 'node_modules/electron' -Force | Select-Object Name, Length, Mode
+          if (Test-Path 'node_modules/electron/path.txt') { Get-Content 'node_modules/electron/path.txt' }
+          if (Test-Path 'node_modules/electron/dist') { Get-ChildItem 'node_modules/electron/dist' | Select-Object -First 15 Name, Length }
           if (-not (Test-Path 'node_modules/electron/dist/electron.exe')) { throw 'ECS electron.exe fehlt' }
           Get-Item 'node_modules/electron/dist/electron.exe' | Select-Object FullName, Length
       - name: Package Windows diagnostic prototype
