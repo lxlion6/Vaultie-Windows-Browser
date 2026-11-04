@@ -420,7 +420,7 @@ class Browser(QMainWindow):
             session_dir.mkdir(parents=True, exist_ok=True)
             self.profile.setPersistentStoragePath(str(session_dir))
             self.profile.setPersistentCookiesPolicy(
-                QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
+                QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
         else:
             self.profile = QWebEngineProfile(self)
             self.profile.setPersistentCookiesPolicy(
