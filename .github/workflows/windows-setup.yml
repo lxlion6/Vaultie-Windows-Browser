@@ -2,6 +2,11 @@ name: Vaultie Windows Setup EXE bauen
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Vaultie_Windows_Setup_Buildpaket/Windows/**'
+      - '.github/workflows/windows-setup.yml'
 
 permissions:
   contents: read
