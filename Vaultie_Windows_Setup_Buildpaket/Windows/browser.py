@@ -835,49 +835,62 @@ class Browser(QMainWindow):
             "Eine Freigabe durch Streamingdienste ist dadurch nicht garantiert.")
 
     def show_video_diagnostics(self):
-        """Probe HTML5 codec support and EME on the active HTTPS page."""
+        """Check codecs synchronously and EME through an asynchronous page probe."""
         view = self.current()
         if not view or view.url().scheme() != "https":
             QMessageBox.information(self, "Video-Diagnose",
                 "Öffne zunächst eine HTTPS-Webseite und starte die Prüfung erneut.")
             return
+        url = view.url().toString()
         script = """
-        (async () => {
+        (() => {
           const video = document.createElement("video");
-          const can = codec => video.canPlayType(codec) || "nein";
-          const h264 = can('video/mp4; codecs="avc1.42E01E"');
-          const aac = can('audio/mp4; codecs="mp4a.40.2"');
-          const combined = can('video/mp4; codecs="avc1.42E01E, mp4a.40.2"');
-          const webm = can('video/webm; codecs="vp9, opus"');
-          let drm = "EME nicht vorhanden";
+          const can = mime => video.canPlayType(mime) || "nein";
+          const result = {
+            h264: can('video/mp4; codecs="avc1.42E01E"'),
+            aac: can('audio/mp4; codecs="mp4a.40.2"'),
+            combined: can('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+            webm: can('video/webm; codecs="vp9, opus"')
+          };
+          window.__vaultieDrmProbe = "EME nicht vorhanden";
           if (navigator.requestMediaKeySystemAccess) {
-            try {
-              await navigator.requestMediaKeySystemAccess("com.widevine.alpha", [{
-                initDataTypes: ["cenc"],
-                audioCapabilities: [{contentType: 'audio/mp4; codecs="mp4a.40.2"'}],
-                videoCapabilities: [{contentType: 'video/mp4; codecs="avc1.42E01E"'}]
-              }]);
-              drm = "Widevine-API verfügbar";
-            } catch (error) {
-              drm = "Widevine nicht verfügbar: " + (error.name || "unbekannt");
-            }
+            window.__vaultieDrmProbe = "Prüfung läuft";
+            navigator.requestMediaKeySystemAccess("com.widevine.alpha", [{
+              initDataTypes: ["cenc"],
+              audioCapabilities: [{contentType: 'audio/mp4; codecs="mp4a.40.2"'}],
+              videoCapabilities: [{contentType: 'video/mp4; codecs="avc1.42E01E"'}]
+            }]).then(
+              () => { window.__vaultieDrmProbe = "Widevine-API verfügbar"; },
+              error => { window.__vaultieDrmProbe =
+                "Widevine nicht verfügbar: " + (error.name || "unbekannt"); }
+            );
           }
-          return {h264, aac, combined, webm, drm};
+          return result;
         })()
         """
-        view.page().runJavaScript(script, self.display_video_diagnostics)
+        view.page().runJavaScript(script, lambda result, v=view, expected=url:
+            self.after_codec_probe(v, expected, result))
 
-    def display_video_diagnostics(self, result):
-        if not isinstance(result, dict):
-            QMessageBox.warning(self, "Video-Diagnose", "Keine Messwerte erhalten.")
+    def after_codec_probe(self, view, url, result):
+        if not isinstance(result, dict) or view.url().toString() != url:
             return
+        QTimer.singleShot(2500, lambda v=view, expected=url, data=result:
+            self.finish_video_probe(v, expected, data))
+
+    def finish_video_probe(self, view, url, result):
+        if view.url().toString() != url:
+            return
+        view.page().runJavaScript("window.__vaultieDrmProbe || 'unbekannt'",
+            lambda drm, data=result: self.display_video_diagnostics(data, drm))
+
+    def display_video_diagnostics(self, result, drm):
         parts = ["H.264: " + str(result.get("h264", "unbekannt")),
                  "AAC: " + str(result.get("aac", "unbekannt")),
                  "MP4 H.264/AAC: " + str(result.get("combined", "unbekannt")),
                  "WebM VP9/Opus: " + str(result.get("webm", "unbekannt")),
-                 "DRM: " + str(result.get("drm", "unbekannt")),
+                 "DRM: " + str(drm or "unbekannt"),
                  "",
-                 "Dies ist ein Funktionstest, keine Zusage für Prime Video."]
+                 "Eine erfolgreiche Prüfung garantiert keine Prime-Video-Freigabe."]
         QMessageBox.information(self, "Video- und DRM-Diagnose", "\n".join(parts))
 
     def set_tab_title(self, view, title):
