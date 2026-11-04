@@ -22,6 +22,7 @@ from PySide6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEnginePage,
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from bandwidth_proxy import LocalBandwidthProxy
 from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
+from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
 HOME = "vaultie:start"
@@ -74,6 +75,7 @@ BOOKMARKS = DATA / "bookmarks.json"
 PINNED = DATA / "pinned.json"
 HIDDEN_SHORTCUTS = DATA / "hidden_shortcuts.json"
 HISTORY = DATA / "history.json"
+CREDENTIALS = DATA / "credentials.dat"
 FILTERS = DATA / "filterliste.txt"
 DOWNLOADS = DATA / "Downloads"
 DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -116,10 +118,9 @@ def configuration():
               "strip_tracking_params": True,
               "bandwidth_enabled": False, "bandwidth_mbps": 10,
               "clear_history_on_exit": False,
-              "private_session": False, **saved}
-    # Regular locally persisted website profile is required to keep logins.
-    # A previous private-session setting must not silently disable logins.
-    config["private_session"] = False
+              "private_session": True, **saved}
+    # Login details live in a small encrypted file, not persistent site storage.
+    config["private_session"] = True
     config["bandwidth_enabled"] = bool(config.get("bandwidth_enabled", False))
     try:
         config["bandwidth_mbps"] = max(3, min(25, int(config.get("bandwidth_mbps", 10))))
@@ -133,8 +134,7 @@ def configuration():
         for key in obsolete:
             config.pop(key, None)
         write_json(SETTINGS, config)
-    # Never erase persistent website cookies / localStorage at startup.
-    # Users can remain signed in between Vaultie launches.
+    # No persistent website storage is created or required by the login vault.
     return config
 
 
@@ -383,19 +383,21 @@ class Browser(QMainWindow):
             self.history = []
         self.session_downloads = []
         self.cleaned_tracking_parameters = 0
-        # Named Qt WebEngine profile: persistent site cookies and HTML5 storage
-        # stay on this PC, independent of the separate local history JSON.
-        # Memory-only HTTP cache limits avoidable disk activity.
-        self.profile = QWebEngineProfile("VaultieLocal", self)
-        website_data = DATA / "website-profile"
-        website_data.mkdir(parents=True, exist_ok=True)
-        self.profile.setPersistentStoragePath(str(website_data))
+        # Off-the-record Qt WebEngine: cookies, HTTP cache, website storage
+        # and browser-side login sessions are discarded on exit.
+        # Only passwords the user explicitly saves are encrypted on disk.
+        self.profile = QWebEngineProfile(self)
         self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
         self.profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
-        # Location/camera/microphone permissions remain session-scoped.
+            QWebEngineProfile.PersistentCookiesPolicy.NoPersistentCookies)
         self.profile.setPersistentPermissionsPolicy(
             QWebEngineProfile.PersistentPermissionsPolicy.StoreInMemory)
+        self.vault = None
+        self.vault_error = None
+        try:
+            self.vault = CredentialVault(CREDENTIALS)
+        except (OSError, ValueError, KeyError, UnicodeDecodeError) as exc:
+            self.vault_error = str(exc)
         self.cookie_filter = lambda request: (
             not self.config.get("block_third_party_cookies", True)
             or not request.thirdParty)
@@ -428,7 +430,7 @@ class Browser(QMainWindow):
         self.create_controls()
         self.apply_design()
         self.add_tab(HOME)
-        self.statusBar().showMessage("Vaultie · Website-Anmeldungen bleiben lokal gespeichert · Keine Cloud-Synchronisierung")
+        self.statusBar().showMessage("Vaultie · Zugangsdaten auf Wunsch lokal verschlüsselt · Keine Cloud-Synchronisierung")
 
     def connection_status(self):
         return "Verlauf ausschließlich lokal gespeichert"
@@ -518,6 +520,8 @@ class Browser(QMainWindow):
         self.menu_button.setToolTip("Menü und Einstellungen")
         menu = QMenu(self)
         menu.addAction("Lesezeichen verwalten", self.show_bookmarks)
+        menu.addAction("Login dieser Website speichern", self.save_login_from_page)
+        menu.addAction("Gespeicherte Logins verwalten", self.show_saved_logins)
         menu.addAction("Downloads anzeigen", self.show_downloads)
         menu.addAction("Lokalen Speicher prüfen / bereinigen", self.show_storage_status)
         menu.addAction("Bandbreitenlimit (3-25 Mbit/s)", self.show_bandwidth_dialog)
@@ -697,6 +701,7 @@ class Browser(QMainWindow):
         view.setPage(page)
         view.titleChanged.connect(lambda title, v=view: self.set_tab_title(v, title))
         view.loadFinished.connect(lambda ok, v=view: self.record_history(v) if ok else None)
+        view.loadFinished.connect(lambda ok, v=view: self.autofill_login(v) if ok else None)
         view.urlChanged.connect(lambda _url, v=view: self.update_address(v))
         view.loadProgress.connect(lambda n: self.statusBar().showMessage(f"Lade {n} %" if n < 100 else self.connection_status()))
         idx = self.tabs.addTab(view, "Neuer Tab")
@@ -754,6 +759,144 @@ class Browser(QMainWindow):
             widget.deleteLater()
         if self.tabs.count() == 0:
             self.add_tab(HOME)
+
+    def autofill_login(self, view):
+        """Fill only HTTPS main-frame login fields; never send data over network."""
+        if not self.vault:
+            return
+        origin = secure_origin(view.url().toString())
+        if not origin:
+            return
+        saved = self.vault.get(origin)
+        if not saved:
+            return
+        payload = json.dumps(saved, ensure_ascii=False)
+        # Avoid persistent JavaScript polling or injecting into third-party frames.
+        script = """
+        (() => {
+          if (window.top !== window.self) return;
+          const item = PAYLOAD;
+          const password = document.querySelector('input[type="password"]:not([disabled])');
+          if (!password || password.value) return;
+          const form = password.form || document;
+          const usernames = Array.from(form.querySelectorAll(
+            'input[autocomplete="username"],input[type="email"],input[type="text"]'
+          )).filter(x => !x.disabled && !x.readOnly);
+          const username = usernames.find(x => x.autocomplete === "username") ||
+                           usernames.find(x => x.type === "email") || usernames[0];
+          function fill(field, value) {
+            if (!field || field.value) return;
+            const setter = Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype, "value").set;
+            setter.call(field, value);
+            field.dispatchEvent(new Event("input", {bubbles:true}));
+            field.dispatchEvent(new Event("change", {bubbles:true}));
+          }
+          if (username) fill(username, item.username);
+          fill(password, item.password);
+        })();
+        """.replace("PAYLOAD", payload)
+        view.page().runJavaScript(script)
+
+    def save_login_from_page(self):
+        """Credential capture only after a direct user click in Vaultie's own menu."""
+        view = self.current()
+        if not view or not self.vault:
+            QMessageBox.warning(self, "Zugangsdaten", self.vault_error or
+                                "Der lokale Passwortspeicher ist nicht verfügbar.")
+            return
+        origin = secure_origin(view.url().toString())
+        if not origin:
+            QMessageBox.information(self, "Zugangsdaten",
+                                    "Zugangsdaten können nur für HTTPS-Websites gespeichert werden.")
+            return
+        script = """
+        (() => {
+          if (window.top !== window.self) return null;
+          const p = document.querySelector('input[type="password"]');
+          if (!p || !p.value) return null;
+          const form = p.form || document;
+          const inputs = Array.from(form.querySelectorAll(
+            'input[autocomplete="username"],input[type="email"],input[type="text"]'
+          ));
+          const u = inputs.find(x => x.autocomplete === "username") ||
+                    inputs.find(x => x.type === "email") || inputs[0];
+          return {username: u ? u.value : "", password: p.value};
+        })();
+        """
+        view.page().runJavaScript(
+            script, lambda values, source=view, site=origin:
+                self.confirm_login_save(source, site, values))
+
+    def confirm_login_save(self, source, origin, values):
+        if (not isinstance(values, dict) or not values.get("password") or
+                source.url().toString().split("/", 3)[:3] != origin.split("/", 3)[:3]):
+            QMessageBox.information(self, "Zugangsdaten",
+                                    "Bitte zuerst Benutzername und Passwort in die "
+                                    "Anmeldefelder der Website eingeben und dann erneut speichern.")
+            return
+        username = (values.get("username") or "").strip()
+        if not username:
+            username, ok = QInputDialog.getText(
+                self, "Zugangsdaten", "Benutzername oder E-Mail-Adresse:")
+            if not ok or not username.strip():
+                return
+            username = username.strip()
+        if QMessageBox.question(
+                self, "Login verschlüsselt speichern",
+                f"Zugangsdaten für {origin} lokal und Windows-benutzergebunden "
+                "verschlüsselt speichern?\n"
+                "Die Website kann weiterhin die eingegebenen Anmeldedaten sehen."
+            ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.vault.save(origin, username, values["password"])
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Zugangsdaten", str(exc))
+            return
+        self.statusBar().showMessage("Login lokal verschlüsselt gespeichert", 4000)
+
+    def show_saved_logins(self):
+        if not self.vault:
+            QMessageBox.warning(self, "Zugangsdaten",
+                                self.vault_error or "Passwortspeicher nicht verfügbar.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Lokal gespeicherte Anmeldungen")
+        dialog.resize(650, 380)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            "Passwörter sind mit dem Windows-Benutzerkonto verschlüsselt."))
+        items = QListWidget(dialog)
+        layout.addWidget(items)
+        def refresh():
+            items.clear()
+            for origin, username in self.vault.list_entries():
+                items.addItem(origin + " — " + username)
+        def remove_selected():
+            index = items.currentRow()
+            entries = self.vault.list_entries()
+            if not 0 <= index < len(entries):
+                return
+            origin = entries[index][0]
+            if QMessageBox.question(dialog, "Login löschen",
+                                    f"Gespeichertes Login für {origin} löschen?"
+                                    ) != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.vault.remove(origin)
+                refresh()
+            except OSError as exc:
+                QMessageBox.warning(dialog, "Zugangsdaten", str(exc))
+        row = QHBoxLayout()
+        for label, callback in (("Ausgewähltes Login löschen", remove_selected),
+                                ("Schließen", dialog.reject)):
+            button = QPushButton(label, dialog)
+            button.clicked.connect(callback)
+            row.addWidget(button)
+        layout.addLayout(row)
+        refresh()
+        dialog.exec()
 
     def bookmark_current(self):
         view = self.current()
@@ -1127,23 +1270,18 @@ class Browser(QMainWindow):
         dialog.exec()
 
     def clear_site_data(self):
-        result = QMessageBox.question(self, "Lokale Website-Daten löschen",
-            "Gespeicherte Cookies und Website-Anmeldungen entfernen?\n"
-            "Du wirst dadurch möglicherweise von Webseiten abgemeldet.\n"
-            "Lesezeichen und Verlauf bleiben erhalten.\n"
-            "Website-Speicher (z. B. LocalStorage) bleibt unter Umständen bestehen.")
+        result = QMessageBox.question(
+            self, "Website-Daten löschen",
+            "Sitzungs-Cookies und HTTP-Cache löschen?\n"
+            "Lokal verschlüsselte Logins, Lesezeichen und Verlauf bleiben erhalten.")
         if result != QMessageBox.StandardButton.Yes:
             return
         self.profile.cookieStore().deleteAllCookies()
         self.profile.clearHttpCache()
         self.profile.clearAllVisitedLinks()
-        # Clearing profile cookies is asynchronous. Website localStorage/IndexedDB
-        # may survive; do not claim a full website-data reset.
-        QMessageBox.information(self, "Datenschutz",
-            "Die Löschung der Cookies und des Caches wurde gestartet.\n"
-            "Website-Speicher (z. B. LocalStorage) kann bestehen bleiben.\n"
-            "Zum vollständigen Zurücksetzen Vaultie beenden und im lokalen\n"
-            "Datenordner den Unterordner 'website-profile' entfernen.")
+        QMessageBox.information(self, "Website-Daten",
+            "Cookies und Cache wurden zur Löschung angewiesen.\n"
+            "Weitere Website-Daten werden beim Beenden der privaten Sitzung verworfen.")
 
     def show_data_folder(self):
         # Use the Windows shell to open the local folder; no upload is performed.
