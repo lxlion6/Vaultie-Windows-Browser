@@ -5,10 +5,11 @@ import re
 import shutil
 import sys
 from functools import partial
+from threading import Lock
 from pathlib import Path
-from urllib.parse import quote_plus, urlsplit
+from urllib.parse import quote_plus, urlsplit, urlunsplit, parse_qsl, urlencode
 
-from PySide6.QtCore import QStandardPaths, Qt, QUrl
+from PySide6.QtCore import QStandardPaths, Qt, QUrl, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -74,9 +75,31 @@ def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+TRACKING_PARAMS = frozenset({
+    "fbclid", "gclid", "dclid", "msclkid", "twclid", "igshid", "mc_cid", "mc_eid"
+})
+
+
+def clean_tracking_url(value):
+    """Only strip known click/campaign identifiers; preserve auth and session data."""
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.query:
+        return value, 0
+    parts = parse_qsl(parsed.query, keep_blank_values=True)
+    kept = [(key, val) for key, val in parts
+            if not key.lower().startswith("utm_") and key.lower() not in TRACKING_PARAMS]
+    removed = len(parts) - len(kept)
+    if not removed:
+        return value, 0
+    cleaned = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                           urlencode(kept), parsed.fragment))
+    return cleaned, removed
+
+
 def configuration():
     saved = read_json(SETTINGS, {})
     config = {"adblock": True, "block_third_party_cookies": True,
+              "strip_tracking_params": True,
               "private_session": True, **saved}
     # Always use private session; a previous setting cannot enable disk-based browsing.
     config["private_session"] = True
@@ -121,6 +144,8 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         super().__init__(parent)
         self.enabled = enabled
         self.hosts = set()
+        self._counters_lock = Lock()
+        self.blocked_requests = 0
         self.reload()
 
     def reload(self):
@@ -156,6 +181,8 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         domains = (*self.PATTERNS, *self.hosts)
         if any(host == item or host.endswith("." + item) for item in domains):
             info.block(True)
+            with self._counters_lock:
+                self.blocked_requests += 1
 
 
 class BrowserPage(QWebEnginePage):
@@ -176,6 +203,15 @@ class BrowserPage(QWebEnginePage):
             elif action == "settings":
                 self.window.show_settings_menu()
             return False
+        if (is_main_frame and self.window.config.get("strip_tracking_params", True)
+                and url.scheme() in ("http", "https")):
+            cleaned, count = clean_tracking_url(url.toString())
+            if count:
+                self.window.cleaned_tracking_parameters += count
+                # Delay until the current navigation callback has returned.
+                QTimer.singleShot(0, lambda page=self, dest=cleaned:
+                                  page.setUrl(QUrl(dest)))
+                return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
     def __init__(self, profile, window, parent=None):
@@ -305,6 +341,7 @@ class Browser(QMainWindow):
             self.setWindowIcon(QIcon(str(icon)))
         self.bookmarks = read_json(BOOKMARKS, [])
         self.session_downloads = []
+        self.cleaned_tracking_parameters = 0
         # Off-the-record Qt WebEngine profile by default: website cookies,
         # cache and storage remain in memory and are discarded on exit.
         # User-owned settings/bookmarks remain on disk, never uploaded by us.
@@ -428,6 +465,8 @@ class Browser(QMainWindow):
         menu.addAction("Lesezeichen verwalten", self.show_bookmarks)
         menu.addAction("Downloads anzeigen", self.show_downloads)
         menu.addAction("Werbeblocker umschalten", self.toggle_blocker)
+        menu.addAction("Link-Tracking-Schutz umschalten", self.toggle_tracking_parameters)
+        menu.addAction("Trackingschutz-Bericht", self.show_tracking_report)
         menu.addAction("Filterliste importieren", self.import_filters)
         menu.addAction("Drittanbieter-Cookies umschalten", self.toggle_third_party_cookies)
         menu.addAction("Cookies und Cache löschen", self.clear_site_data)
@@ -633,6 +672,28 @@ class Browser(QMainWindow):
             row.addWidget(button)
         layout.addLayout(row)
         dialog.exec()
+
+    def toggle_tracking_parameters(self):
+        enabled = not self.config.get("strip_tracking_params", True)
+        self.config["strip_tracking_params"] = enabled
+        write_json(SETTINGS, self.config)
+        QMessageBox.information(
+            self, "Lokaler Trackingschutz",
+            "Bekannte Trackingparameter werden bei neuen Hauptseitenaufrufen "
+            + ("entfernt." if enabled else "nicht mehr entfernt.")
+            + "\\nAnmeldeparameter und Formulardaten werden nicht pauschal verändert.")
+
+    def show_tracking_report(self):
+        with self.blocker._counters_lock:
+            blocked = self.blocker.blocked_requests
+        QMessageBox.information(
+            self, "Lokaler Trackingschutz",
+            f"Seit Programmstart blockierte bekannte Werbe-/Tracker-Anfragen: {blocked}\\n"
+            f"Seit Programmstart entfernte Trackingparameter: {self.cleaned_tracking_parameters}\\n"
+            f"Lokale Domainregeln: {len(self.blocker.PATTERNS) + len(self.blocker.hosts)} "
+            "(einschließlich möglicher Überschneidungen).\\n"
+            "Es werden weder Webseitenprotokolle noch Berichte online gespeichert. "
+            "Die Zähler werden beim Beenden verworfen.")
 
     def toggle_blocker(self):
         self.config["adblock"] = not self.config["adblock"]
