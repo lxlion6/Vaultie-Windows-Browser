@@ -3,6 +3,12 @@
   "use strict";
   const scheme = location.protocol;
   if (scheme !== "https:" && scheme !== "http:") return;
+  // Do not tamper with authentication or DRM-sensitive Amazon/Prime scripts.
+  const host = location.hostname.toLowerCase();
+  if (host === "primevideo.com" || host.endsWith(".primevideo.com") ||
+      host === "amazon.com" || host.endsWith(".amazon.com") ||
+      host === "amazon.de" || host.endsWith(".amazon.de") ||
+      host === "amazon.co.uk" || host.endsWith(".amazon.co.uk")) return;
   // A fresh random seed per browser session; isolate observations by site.
   let state = 2166136261;
   const seed = "VAULTIE_SESSION_SEED" + "|" + location.hostname.toLowerCase();
