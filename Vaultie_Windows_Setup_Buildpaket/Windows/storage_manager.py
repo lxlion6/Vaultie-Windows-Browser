@@ -1,8 +1,9 @@
 """Safe local-storage budget checks for Vaultie on Windows.
 
-Only Vaultie's own LocalAppData folder is inspected. Downloads and personal
-settings are never deleted silently. Browser temporary folders may be cleaned
-when they are not in use. The upper bound is enforced for *new* downloads.
+Only Vaultie's browser-internal files are counted. Downloads are explicitly
+excluded from both accounting and cleanup. User settings and bookmarks are
+preserved. Cache directories may be cleaned when safe; the 5 GB target cannot
+be guaranteed if irremovable browser data exceed it.
 """
 import os
 import shutil
@@ -35,6 +36,7 @@ def folder_bytes(root):
         base_path = Path(base)
         dirs[:] = [d for d in dirs
                    if not (base_path / d).is_symlink()
+                   and not (base_path == root and d == "Downloads")
                    and _inside(root, (base_path / d).resolve())]
         for filename in files:
             path = base_path / filename
@@ -101,8 +103,3 @@ class StorageBudget:
         after = self.size() if cleaned or force else before
         return before, after, cleaned
 
-    def can_download(self, expected_size):
-        _, size, _ = self.check()
-        if expected_size is None or expected_size < 0:
-            return size < HARD_LIMIT
-        return size + expected_size <= HARD_LIMIT
