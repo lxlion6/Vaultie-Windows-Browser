@@ -28,7 +28,7 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
 DEFAULT_SHORTCUTS = (
@@ -880,136 +880,184 @@ class Browser(QMainWindow):
             "Eine Freigabe durch Streamingdienste ist dadurch nicht garantiert.")
 
     def show_video_diagnostics(self):
-        """Always show a diagnosis window, even if page JavaScript fails."""
-        view = self.current()
+        """Probe media codecs on a private internal page; probe DRM separately."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Video-Codecs und DRM – Diagnose")
-        dialog.resize(590, 310)
+        dialog.setWindowTitle("Vaultie – Video-Codecs und DRM")
+        dialog.resize(665, 390)
         layout = QVBoxLayout(dialog)
-        label = QLabel(dialog)
+        label = QLabel("Interne Codec-Prüfung wird gestartet …", dialog)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(label)
+        details = QLabel(
+            "Der Codec-Test läuft auf einer eigenen internen Seite und "
+            "ist unabhängig von Prime Video. Widevine wird getrennt geprüft. "
+            "Eine DRM-API-Zusage garantiert noch keine Filmwiedergabe.",
+            dialog)
+        details.setWordWrap(True)
+        layout.addWidget(details)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        if not view or view.url().scheme() not in ("http", "https"):
-            label.setText("Bitte zunächst eine Webseite mit HTTPS öffnen. "
-                          "Die Diagnose benötigt eine geladene Webseite.")
-            dialog.exec()
-            return
-        label.setText("Prüfung läuft: H.264, AAC, WebM und Widevine DRM …")
-        url = view.url().toString()
-        state = {"finished": False}
-        timeout = QTimer(dialog)
-        timeout.setSingleShot(True)
-        timeout.setInterval(8000)
 
-        def failed():
-            if state["finished"]:
+        # Keep the QWebEnginePage alive for the lifetime of the dialog.
+        # No remote URL or third-party scripts are loaded for codec testing.
+        probe = QWebEnginePage(self.profile, dialog)
+        state = {"codec_done": False, "drm_done": False,
+                 "codecs": None, "drm": "Noch nicht geprüft"}
+        timer = QTimer(dialog)
+        timer.setSingleShot(True)
+        timer.setInterval(10000)
+
+        def render():
+            codecs = state["codecs"]
+            if codecs is None:
+                codec_lines = ["Codec-Test: läuft …"]
+            elif "error" in codecs:
+                codec_lines = ["Codec-Test: " + str(codecs["error"])]
+            else:
+                codec_lines = [
+                    "H.264 (MP4): " + str(codecs.get("h264", "unbekannt")),
+                    "AAC (MP4): " + str(codecs.get("aac", "unbekannt")),
+                    "H.264 + AAC (MP4): " + str(codecs.get("mp4", "unbekannt")),
+                    "VP9 + Opus (WebM): " + str(codecs.get("webm", "unbekannt")),
+                    "MSE (MediaSource): " + str(codecs.get("mse", "unbekannt"))]
+            label.setText("\\n".join(codec_lines + ["", "Widevine / DRM: " + state["drm"]]))
+
+        def parse_json(raw):
+            # JSON string sidesteps JS/QVariant conversion differences.
+            if not isinstance(raw, str):
+                return {"error": "Kein gültiger Rückgabewert aus der Browser-Engine"}
+            try:
+                result = json.loads(raw)
+                if not isinstance(result, dict):
+                    raise ValueError("JSON-Objekt erwartet")
+                return result
+            except (ValueError, TypeError):
+                return {"error": "Diagnosedaten konnten nicht gelesen werden"}
+
+        def codec_result(raw):
+            if state["codec_done"] or not dialog.isVisible():
                 return
-            state["finished"] = True
-            label.setText("Die Videoprüfung hat innerhalb von 8 Sekunden "
-                          "keine Antwort von der Webseite erhalten.\\n"
-                          "Mögliche Gründe: Seite lädt noch, Skripte werden "
-                          "blockiert oder die Browser-Engine meldet einen Fehler.\\n"
-                          "Versuche es auf einer vollständig geladenen HTTPS-Webseite erneut.")
+            state["codec_done"] = True
+            state["codecs"] = parse_json(raw)
+            render()
 
-        timeout.timeout.connect(failed)
-        script = """
+        codec_script = r"""
         (() => {
           try {
-            const video = document.createElement("video");
-            const can = mime => video.canPlayType(mime) || "nein";
-            const result = {
+            const media = document.createElement('video');
+            const can = mime => media.canPlayType(mime) || 'nein';
+            return JSON.stringify({
               h264: can('video/mp4; codecs="avc1.42E01E"'),
               aac: can('audio/mp4; codecs="mp4a.40.2"'),
-              combined: can('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+              mp4: can('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
               webm: can('video/webm; codecs="vp9, opus"'),
-              drm: "EME nicht verfügbar"
-            };
-            if (navigator.requestMediaKeySystemAccess) {
-              result.drm = "EME vorhanden – Widevine wird separat geprüft";
-            }
-            return result;
-          } catch (error) {
-            return {error: String(error)};
+              mse: typeof MediaSource !== 'undefined'
+            });
+          } catch (e) {
+            return JSON.stringify({error: String(e)});
           }
-        })();
+        })()
         """
 
-        def got_codecs(result):
-            if state["finished"] or not dialog.isVisible():
+        def ready(ok):
+            if state["codec_done"] or not dialog.isVisible():
                 return
-            if view.url().toString() != url:
-                state["finished"] = True
-                timeout.stop()
-                label.setText("Die Webseite hat während der Prüfung gewechselt. "
-                              "Bitte die Diagnose auf der gewünschten Seite erneut starten.")
+            if not ok:
+                codec_result(json.dumps(
+                    {"error": "Interne Diagnoseseite konnte nicht geladen werden"}))
                 return
-            if not isinstance(result, dict):
-                state["finished"] = True
-                timeout.stop()
-                label.setText("Die Webseite hat kein gültiges Diagnoseergebnis "
-                              "zurückgegeben. Prüfe, ob die Seite vollständig geladen ist.")
-                return
-            if result.get("error"):
-                state["finished"] = True
-                timeout.stop()
-                label.setText("Fehler bei der Codec-Prüfung: " + result["error"])
-                return
-            lines = [
-                "H.264: " + str(result.get("h264", "unbekannt")),
-                "AAC: " + str(result.get("aac", "unbekannt")),
-                "MP4 (H.264/AAC): " + str(result.get("combined", "unbekannt")),
-                "WebM (VP9/Opus): " + str(result.get("webm", "unbekannt"))
-            ]
-            label.setText("\\n".join(lines) + "\\nDRM: wird geprüft …")
-            if result.get("drm") == "EME nicht verfügbar":
-                state["finished"] = True
-                timeout.stop()
-                label.setText("\\n".join(lines) + "\\nDRM: EME nicht verfügbar")
-                return
-            drm_script = """
+            probe.runJavaScript(codec_script, codec_result)
+
+        probe.loadFinished.connect(ready)
+        probe.setHtml("<!doctype html><html><head><meta charset='utf-8'>"
+                      "</head><body>Vaultie-Mediatest</body></html>")
+
+        view = self.current()
+        if not view or view.url().scheme() != "https":
+            state["drm_done"] = True
+            state["drm"] = "Für Widevine bitte eine HTTPS-Webseite öffnen"
+        else:
+            # The active HTTPS origin is required for this EME permission test.
+            drm_script = r"""
             (() => {
               try {
-                if (!navigator.requestMediaKeySystemAccess)
-                  return "EME nicht verfügbar";
-                navigator.requestMediaKeySystemAccess("com.widevine.alpha", [{
-                  initDataTypes: ["cenc"],
-                  videoCapabilities: [{
-                    contentType: 'video/mp4; codecs="avc1.42E01E"'
-                  }]
-                }]).then(
-                  () => { window.__vaultieDrmResult = "Widevine verfügbar"; },
-                  err => { window.__vaultieDrmResult =
-                    "Widevine nicht verfügbar (" + (err.name || "Fehler") + ")"; }
+                if (!window.isSecureContext)
+                  return JSON.stringify({state:'Nicht sicherer Kontext'});
+                if (typeof navigator.requestMediaKeySystemAccess !== 'function')
+                  return JSON.stringify({state:'EME-API fehlt'});
+                const request = navigator.requestMediaKeySystemAccess(
+                  'com.widevine.alpha', [{
+                    initDataTypes: ['cenc'],
+                    videoCapabilities: [{
+                      contentType: 'video/mp4; codecs="avc1.42E01E"'
+                    }]
+                  }]);
+                window.__vaultieMediaDrm = JSON.stringify(
+                  {state:'Widevine-Abfrage läuft'});
+                request.then(
+                  () => { window.__vaultieMediaDrm =
+                    JSON.stringify({state:'Widevine-Zugang für H.264 angeboten'}); },
+                  err => { window.__vaultieMediaDrm =
+                    JSON.stringify({state:'Widevine nicht verfügbar: ' +
+                      (err && err.name ? err.name : 'unbekannt')}); }
                 );
-                window.__vaultieDrmResult = "Prüfung läuft";
-                return "Prüfung gestartet";
-              } catch (err) {
-                return "DRM-Prüfung fehlgeschlagen: " + String(err);
+                return JSON.stringify({state:'Widevine-Abfrage läuft'});
+              } catch (e) {
+                return JSON.stringify({state:'DRM-Abfrage fehlgeschlagen: ' +
+                  String(e)});
               }
-            })();
+            })()
             """
-            def finish(result_text):
-                if state["finished"] or not dialog.isVisible():
+            def drm_result(raw):
+                if state["drm_done"] or not dialog.isVisible():
                     return
-                state["finished"] = True
-                timeout.stop()
-                label.setText("\\n".join(lines) + "\\nDRM: " + str(result_text))
-            def drm_started(result_text):
-                if isinstance(result_text, str) and result_text.startswith("DRM-Prüfung fehlgeschlagen"):
-                    finish(result_text)
-                else:
-                    QTimer.singleShot(900, lambda: view.page().runJavaScript(
-                        "window.__vaultieDrmResult || 'keine Antwort'",
-                        finish) if not state["finished"] else None)
-            view.page().runJavaScript(drm_script, drm_started)
+                result = parse_json(raw)
+                state["drm"] = str(result.get("state", result.get("error", "Unbekannt")))
+                if state["drm"] != "Widevine-Abfrage läuft":
+                    state["drm_done"] = True
+                render()
 
-        timeout.start()
-        view.page().runJavaScript(script, got_codecs)
+            def poll_drm(attempt=0):
+                if state["drm_done"] or not dialog.isVisible():
+                    return
+                if attempt >= 7:
+                    state["drm_done"] = True
+                    state["drm"] = "Keine abschließende Antwort (Timeout)"
+                    render()
+                    return
+                def polled(raw):
+                    if state["drm_done"] or not dialog.isVisible():
+                        return
+                    drm_result(raw)
+                    if not state["drm_done"]:
+                        QTimer.singleShot(550, lambda: poll_drm(attempt + 1))
+                view.page().runJavaScript(
+                    "window.__vaultieMediaDrm || "
+                    "'{\\\"state\\\":\\\"Keine Antwort\\\"}'",
+                    polled)
+
+            def started(raw):
+                drm_result(raw)
+                if not state["drm_done"]:
+                    QTimer.singleShot(550, poll_drm)
+            view.page().runJavaScript(drm_script, started)
+
+        def expired():
+            if not state["codec_done"]:
+                state["codec_done"] = True
+                state["codecs"] = {"error": "Interne Browser-Engine antwortet nicht (Timeout)"}
+            if not state["drm_done"]:
+                state["drm_done"] = True
+                state["drm"] = "DRM-Abfrage ohne Antwort (Timeout)"
+            render()
+
+        timer.timeout.connect(expired)
+        timer.start()
+        render()
         dialog.exec()
+        timer.stop()
 
     def set_tab_title(self, view, title):
         index = self.tabs.indexOf(view)
