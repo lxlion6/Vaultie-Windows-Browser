@@ -30,6 +30,10 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      - name: .NET 8 für WebView2 bereitstellen
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
       - name: Lokalen Bandbreitenbegrenzer testen
         shell: pwsh
         run: |
@@ -56,6 +60,14 @@ jobs:
             --collect-all PySide6.QtWebEngineWidgets `
             browser.py
           if (-not (Test-Path 'dist/Vaultie/Vaultie.exe')) { throw 'Programmdatei fehlt' }
+      - name: Native Windows-Medien-Engine erstellen
+        shell: pwsh
+        run: |
+          dotnet publish Streaming/Vaultie.Streaming.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o Streaming/publish
+          if ($LASTEXITCODE -ne 0) { throw 'WebView2-Streaming-Build fehlgeschlagen' }
+          if (-not (Test-Path 'Streaming/publish/Vaultie.Streaming.exe')) { throw 'WebView2-EXE fehlt' }
+          Copy-Item 'Streaming/publish/*' 'dist/Vaultie/' -Recurse -Force
+          if (-not (Test-Path 'dist/Vaultie/Vaultie.Streaming.exe')) { throw 'WebView2-EXE fehlt im Installer' }
       - name: Installer erstellen
         shell: pwsh
         run: |
