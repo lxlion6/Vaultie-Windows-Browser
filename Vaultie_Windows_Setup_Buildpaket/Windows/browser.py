@@ -502,6 +502,8 @@ class Browser(QMainWindow):
         folder = self.toolbar_button(bar, "★", self.show_bookmarks, "Lesezeichen-Ordner öffnen und verwalten")
         folder.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
         folder.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toolbar_button(bar, "🔑", self.save_login_from_page,
+            "Login speichern – Zugangsdaten aus Formular übernehmen oder eingeben")
         self.adblock_button = self.toolbar_button(bar, "◆  Schutz aktiv", self.toggle_blocker,
             "Werbeblocker ein- oder ausschalten", "adblockState")
         self.refresh_blocker_status()
@@ -805,7 +807,11 @@ class Browser(QMainWindow):
         view.page().runJavaScript(script)
 
     def save_login_from_page(self):
-        """Credential capture only after a direct user click in Vaultie's own menu."""
+        """Always offer a visible way to store a login, including after signing in.
+
+        Values can be imported from the current form, or entered manually when
+        the login page has already disappeared. Never stores without consent.
+        """
         view = self.current()
         if not view or not self.vault:
             QMessageBox.warning(self, "Zugangsdaten", self.vault_error or
@@ -813,18 +819,19 @@ class Browser(QMainWindow):
             return
         origin = secure_origin(view.url().toString())
         if not origin:
-            QMessageBox.information(self, "Zugangsdaten",
-                                    "Zugangsdaten können nur für HTTPS-Websites gespeichert werden.")
+            QMessageBox.information(
+                self, "Zugangsdaten",
+                "Bitte zuerst eine sichere HTTPS-Webseite öffnen.")
             return
         script = """
         (() => {
           if (window.top !== window.self) return null;
-          const p = document.querySelector('input[type="password"]');
-          if (!p || !p.value) return null;
+          const p = document.querySelector('input[type="password"]:not([disabled])');
+          if (!p) return null;
           const form = p.form || document;
           const inputs = Array.from(form.querySelectorAll(
             'input[autocomplete="username"],input[type="email"],input[type="text"]'
-          ));
+          )).filter(x => !x.disabled);
           const u = inputs.find(x => x.autocomplete === "username") ||
                     inputs.find(x => x.type === "email") || inputs[0];
           return {username: u ? u.value : "", password: p.value};
@@ -832,35 +839,64 @@ class Browser(QMainWindow):
         """
         view.page().runJavaScript(
             script, lambda values, source=view, site=origin:
-                self.confirm_login_save(source, site, values))
+                self.show_save_login_dialog(source, site, values))
 
-    def confirm_login_save(self, source, origin, values):
-        if (not isinstance(values, dict) or not values.get("password") or
-                source.url().toString().split("/", 3)[:3] != origin.split("/", 3)[:3]):
-            QMessageBox.information(self, "Zugangsdaten",
-                                    "Bitte zuerst Benutzername und Passwort in die "
-                                    "Anmeldefelder der Website eingeben und dann erneut speichern.")
+    def show_save_login_dialog(self, source, origin, values):
+        if not self.vault or secure_origin(source.url().toString()) != origin:
             return
-        username = (values.get("username") or "").strip()
-        if not username:
-            username, ok = QInputDialog.getText(
-                self, "Zugangsdaten", "Benutzername oder E-Mail-Adresse:")
-            if not ok or not username.strip():
+        values = values if isinstance(values, dict) else {}
+        existing = self.vault.get(origin) or {}
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Login lokal speichern")
+        dialog.resize(460, 210)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            "Benutzername und Passwort werden nur nach deiner Bestätigung "
+            "verschlüsselt auf diesem Windows-PC gespeichert."))
+        form = QFormLayout()
+        username = QLineEdit(dialog)
+        username.setPlaceholderText("E-Mail-Adresse oder Benutzername")
+        username.setText(values.get("username") or existing.get("username", ""))
+        password = QLineEdit(dialog)
+        password.setPlaceholderText("Passwort eingeben, falls es nicht mehr im Formular steht")
+        password.setEchoMode(QLineEdit.EchoMode.Password)
+        # Do not display or silently reuse existing stored passwords.
+        password.setText(values.get("password") or "")
+        show_password = QCheckBox("Passwort kurz anzeigen", dialog)
+        show_password.toggled.connect(lambda enabled: password.setEchoMode(
+            QLineEdit.EchoMode.Normal if enabled else QLineEdit.EchoMode.Password))
+        form.addRow("Webseite:", QLabel(origin, dialog))
+        form.addRow("Benutzername:", username)
+        form.addRow("Passwort:", password)
+        layout.addLayout(form)
+        layout.addWidget(show_password)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Verschlüsselt speichern")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Abbrechen")
+        layout.addWidget(buttons)
+
+        def save():
+            if not username.text().strip() or not password.text():
+                QMessageBox.warning(dialog, "Zugangsdaten",
+                                    "Bitte Benutzername und Passwort eintragen.")
                 return
-            username = username.strip()
-        if QMessageBox.question(
-                self, "Login verschlüsselt speichern",
-                f"Zugangsdaten für {origin} lokal und Windows-benutzergebunden "
-                "verschlüsselt speichern?\n"
-                "Die Website kann weiterhin die eingegebenen Anmeldedaten sehen."
-            ) != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            self.vault.save(origin, username, values["password"])
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Zugangsdaten", str(exc))
-            return
-        self.statusBar().showMessage("Login lokal verschlüsselt gespeichert", 4000)
+            if secure_origin(source.url().toString()) != origin:
+                QMessageBox.warning(dialog, "Zugangsdaten",
+                                    "Die Webseite hat sich geändert. Bitte erneut öffnen.")
+                return
+            try:
+                self.vault.save(origin, username.text().strip(), password.text())
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(dialog, "Zugangsdaten", str(exc))
+                return
+            dialog.accept()
+            self.statusBar().showMessage("Login sicher und lokal gespeichert", 4000)
+
+        buttons.accepted.connect(save)
+        buttons.rejected.connect(dialog.reject)
+        dialog.exec()
 
     def show_saved_logins(self):
         if not self.vault:
