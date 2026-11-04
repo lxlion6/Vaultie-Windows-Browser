@@ -845,11 +845,11 @@ class Browser(QMainWindow):
           const observer = new MutationObserver(() => {
             if (pending) return;
             pending = true;
-            queueMicrotask(() => {
+            setTimeout(() => {
               pending = false;
               status = attempt();
               if (status === "filled" || status === "origin") observer.disconnect();
-            });
+            }, 150);
           });
           window.__vaultieLoginObserver = observer;
           observer.observe(document.documentElement, {childList:true, subtree:true});
