@@ -770,20 +770,15 @@ class Browser(QMainWindow):
             self.add_tab(HOME)
 
     def schedule_login_fill(self, view):
-        """Retry briefly because many sites build their login forms after loadFinished."""
-        if not self.vault:
-            return
-        url = view.url().toString()
-        origin = secure_origin(url)
-        if not origin or not self.vault.get(origin):
-            return
-        # At most three attempts for one navigation; no background polling.
-        for delay in (100, 750, 1800):
-            QTimer.singleShot(delay, lambda v=view, expected=url:
-                self.autofill_login(v) if v.url().toString() == expected else None)
+        """Autofill immediately and react to dynamically inserted sign-in forms.
+
+        Install one short-lived MutationObserver only when credentials for the
+        exact HTTPS origin exist. No Python timer loop or additional process.
+        """
+        self.autofill_login(view)
 
     def autofill_login(self, view, manual=False):
-        """Fill the saved credential on its exact HTTPS origin, not subframes."""
+        """Fill known HTTPS login fields, including late SPA/login-dialog fields."""
         if not self.vault:
             if manual:
                 QMessageBox.warning(self, "Zugangsdaten",
@@ -803,41 +798,70 @@ class Browser(QMainWindow):
                     "Möglicherweise verwendet die Webseite eine andere Login-Domain.")
             return
         payload = json.dumps(saved, ensure_ascii=True)
+        expected_origin = json.dumps(origin, ensure_ascii=True)
         script = """
         (() => {
-          if (window.top !== window.self) return "frame";
-          const item = PAYLOAD;
-          const fields = Array.from(document.querySelectorAll('input'));
-          const password = fields.find(x => x.type === "password" &&
-                                             !x.disabled && !x.readOnly);
-          const username = fields.find(x => x.autocomplete === "username" &&
-                                             !x.disabled && !x.readOnly) ||
-                           fields.find(x => x.type === "email" && !x.disabled &&
-                                             !x.readOnly) ||
-                           fields.find(x => x.type === "text" && !x.disabled &&
-                                             !x.readOnly && x.name &&
-                                             /user|login|email/i.test(x.name));
-          function fill(field, value) {
-            if (!field || field.value) return false;
+          if (window.top !== window.self ||
+              window.location.origin !== EXPECTED_ORIGIN) return "origin";
+          const credentials = PAYLOAD;
+          // Do not touch password reset or account-registration forms.
+          const visible = el => el && !el.disabled && !el.readOnly &&
+            el.getClientRects().length > 0;
+          const fill = (field, value) => {
+            if (!visible(field) || field.value) return false;
             const setter = Object.getOwnPropertyDescriptor(
               HTMLInputElement.prototype, "value").set;
             setter.call(field, value);
             field.dispatchEvent(new Event("input", {bubbles:true}));
             field.dispatchEvent(new Event("change", {bubbles:true}));
             return true;
-          }
-          if (!username && !password) return "missing";
-          let changed = false;
-          if (username) changed = fill(username, item.username) || changed;
-          if (password) changed = fill(password, item.password) || changed;
-          return changed ? "filled" : "existing";
+          };
+          let usernameFilled = false;
+          let passwordFilled = false;
+          const attempt = () => {
+            if (window.location.origin !== EXPECTED_ORIGIN) return "origin";
+            const fields = Array.from(document.querySelectorAll("input")).filter(visible);
+            const pass = fields.find(el => el.type === "password" &&
+              !/new-password|one-time-code/.test(el.autocomplete || ""));
+            const container = pass ? (pass.form || document) : document;
+            const users = Array.from(container.querySelectorAll("input")).filter(visible);
+            const user = users.find(el => el.autocomplete === "username") ||
+              users.find(el => el.type === "email") ||
+              users.find(el => /^(text|email)$/.test(el.type) &&
+                /user|login|email|identifier/i.test(
+                  [el.name, el.id, el.autocomplete].join(" ")));
+            if (user) usernameFilled = fill(user, credentials.username) || usernameFilled;
+            if (pass) passwordFilled = fill(pass, credentials.password) || passwordFilled;
+            if (passwordFilled) return "filled";
+            if (usernameFilled) return "username";
+            return pass || user ? "existing" : "missing";
+          };
+          let status = attempt();
+          if (status === "filled") return status;
+          // Login forms often appear after loadFinished or after clicking "Anmelden".
+          // Observe DOM changes instead of running CPU-consuming periodic checks.
+          if (window.__vaultieLoginObserver) window.__vaultieLoginObserver.disconnect();
+          let pending = false;
+          const observer = new MutationObserver(() => {
+            if (pending) return;
+            pending = true;
+            queueMicrotask(() => {
+              pending = false;
+              status = attempt();
+              if (status === "filled" || status === "origin") observer.disconnect();
+            });
+          });
+          window.__vaultieLoginObserver = observer;
+          observer.observe(document.documentElement, {childList:true, subtree:true});
+          window.addEventListener("pagehide", () => observer.disconnect(), {once:true});
+          setTimeout(() => observer.disconnect(), 120000);
+          return status;
         })();
-        """.replace("PAYLOAD", payload)
-        page = view.page()
+        """.replace("PAYLOAD", payload).replace("EXPECTED_ORIGIN", expected_origin)
         if manual:
-            page.runJavaScript(script, lambda result: self.show_autofill_result(result))
+            view.page().runJavaScript(script, lambda result: self.show_autofill_result(result))
         else:
-            page.runJavaScript(script)
+            view.page().runJavaScript(script)
 
     def fill_current_login(self):
         view = self.current()
