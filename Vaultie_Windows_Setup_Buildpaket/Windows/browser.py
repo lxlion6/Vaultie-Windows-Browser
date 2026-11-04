@@ -5,6 +5,7 @@ from datetime import datetime
 import os
 import re
 import secrets
+import subprocess
 import shutil
 import sys
 from functools import partial
@@ -28,9 +29,20 @@ from storage_manager import StorageBudget, CLEAN_AT, HARD_LIMIT, GIB
 from credentials import CredentialVault, secure_origin
 
 APP_NAME = "Vaultie"
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 RELEASE_API = "https://api.github.com/repos/lxlion6/Vaultie-Windows-Browser/releases/tags/windows-latest"
 HOME = "vaultie:start"
+STREAM_HOSTS = ("primevideo.com", "netflix.com", "disneyplus.com",
+                "disneyplus.de", "max.com", "wowtv.de", "paramountplus.com")
+
+def needs_native_media_engine(url):
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("https", "http"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return any(host == name or host.endswith("." + name)
+               for name in STREAM_HOSTS)
+
 DEFAULT_SHORTCUTS = (
     ("YouTube", "https://www.youtube.com/", "▶", "yt"),
     ("Discord", "https://discord.com/app", "◉", "discord"),
@@ -258,6 +270,10 @@ class BrowserPage(QWebEnginePage):
             elif action == "settings":
                 self.window.show_settings_menu()
             return False
+        if is_main_frame and needs_native_media_engine(url.toString()):
+            QTimer.singleShot(0, lambda address=url.toString():
+                              self.window.open_native_video(address))
+            return False
         if (is_main_frame and self.window.config.get("strip_tracking_params", True)
                 and url.scheme() in ("http", "https")):
             cleaned, count = clean_tracking_url(url.toString())
@@ -412,6 +428,7 @@ class Browser(QMainWindow):
         self.session_downloads = []
         self.download_items = []
         self.downloads_dialog = None
+        self.native_video_processes = []
         self.cleaned_tracking_parameters = 0
         # Off-the-record Qt WebEngine: cookies, HTTP cache, website storage
         # and browser-side login sessions are discarded on exit.
@@ -830,6 +847,27 @@ class Browser(QMainWindow):
     def current(self):
         return self.tabs.currentWidget()
 
+    def open_native_video(self, url):
+        """Select the native media engine automatically for supported domains."""
+        if not needs_native_media_engine(url):
+            return False
+        location = (Path(sys.executable).parent if getattr(sys, "frozen", False)
+                    else Path(__file__).parent) / "Vaultie.Streaming.exe"
+        if not location.is_file():
+            QMessageBox.warning(
+                self, "Videowiedergabe",
+                "Die native Medien-Engine fehlt. Bitte Vaultie vollständig aktualisieren.")
+            return True
+        try:
+            process = subprocess.Popen([str(location), url],
+                                       cwd=str(location.parent), close_fds=True)
+            self.native_video_processes = [
+                p for p in self.native_video_processes if p.poll() is None]
+            self.native_video_processes.append(process)
+        except OSError as error:
+            QMessageBox.warning(self, "Videowiedergabe", str(error))
+        return True
+
     def add_tab(self, url=None, switch=True):
         view = QWebEngineView(self)
         page = BrowserPage(self.profile, self, view)
@@ -848,7 +886,8 @@ class Browser(QMainWindow):
         if url == HOME:
             view.setHtml(self.start_page_html(), QUrl("about:blank"))
         elif url:
-            view.setUrl(QUrl(url))
+            if not self.open_native_video(url):
+                view.setUrl(QUrl(url))
         return view
 
     def handle_fullscreen_request(self, request, view):
@@ -1095,7 +1134,8 @@ class Browser(QMainWindow):
             dest = "https://" + text
         else:
             dest = "https://www.startpage.com/sp/search?query=" + quote_plus(text)
-        self.current().setUrl(QUrl(dest))
+        if not self.open_native_video(dest):
+            self.current().setUrl(QUrl(dest))
 
     def close_tab(self, index):
         widget = self.tabs.widget(index)
