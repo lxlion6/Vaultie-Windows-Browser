@@ -134,7 +134,13 @@ def configuration():
         for key in obsolete:
             config.pop(key, None)
         write_json(SETTINGS, config)
-    # No persistent website storage is created or required by the login vault.
+    # Remove website data left by the intermediate persistent-profile build.
+    old_site_data = DATA / "website-profile"
+    if old_site_data.is_dir() and not old_site_data.is_symlink():
+        try:
+            shutil.rmtree(old_site_data)
+        except OSError:
+            pass
     return config
 
 
@@ -1307,12 +1313,10 @@ class Browser(QMainWindow):
             "Diese Version hat keine VPN-Integration. "
             "Der Browser verwendet die normalen Windows-Netzwerkeinstellungen. "
             "Ein separat eingeschaltetes Windows-VPN kann trotzdem den Browser betreffen.\n\n"
-            "Lesezeichen, Verlauf und Website-Anmeldungen werden lokal gespeichert, "
-            "nicht in eine Vaultie-Cloud übertragen. Cookies und Website-Speicher "
-            "können Anmeldeinformationen enthalten; schütze daher dein Windows-Konto. "
-            "Der HTTP-Cache bleibt nur im Arbeitsspeicher. "
-            "Ein eigener Passwortmanager ist nicht integriert; Websites können die "
-            "Anmeldung trotzdem erneut verlangen.\n\n"
+            "Lesezeichen und Verlauf bleiben lokal. Nur ausdrücklich gespeicherte "
+            "Logins werden mit Windows DPAPI verschlüsselt und nicht synchronisiert. "
+            "Cookies, HTTP-Cache und Website-Sitzungen bleiben nur im Arbeitsspeicher. "
+            "Websites können eine erneute Anmeldung verlangen.\\n\\n"
             "Der Werbeblocker nutzt einfache Domainfilter. Dies ist keine unabhaengig "
             "sicherheitsgepruefte Browser-Version. Websites erhalten weiterhin "
             "technisch erforderliche Anfragen und von dir eingegebene Daten.")
