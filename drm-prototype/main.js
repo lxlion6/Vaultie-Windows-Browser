@@ -6,11 +6,11 @@ const {protocol}=require('electron');protocol.registerSchemesAsPrivileged([{sche
 app.commandLine.appendSwitch('disable-quic');
 if(process.env.VAULTIE_TEST_USER_DATA)app.setPath('userData',process.env.VAULTIE_TEST_USER_DATA);
 let win=null,tabs=new Map(),active=null,seq=0,ready=false,widevine='Nicht geprüft',downloads=[],bookmarks=[],passwords=[],settings={adblock:true,stripTracking:true,rememberSessions:false},blocked=0,closing=false;
-let dir,profile,panelOpen=false,htmlFullscreen=false;
+let dir,profile,panelOpen=false,htmlFullscreen=false,panelName=null;
 const {BandwidthProxy}=require('./bandwidth');
 const privacy=require('./privacy'),{checkStorage}=require('./storage');
 const crypto=require('node:crypto');
-const profiles=new Set();let proxy,history=[],pinned=[],hidden=[],domains=new Set(privacy.DEFAULT_HOSTS),blockReport={},stripped=0,storage={},storageBusy=false;
+const viewsByContents=new Map();const profiles=new Set();let proxy,history=[],pinned=[],hidden=[],domains=new Set(privacy.DEFAULT_HOSTS),blockReport={},stripped=0,storage={},storageBusy=false;
 const seed=crypto.randomBytes(16).toString('hex');
 settings={...settings,fingerprinting:true,thirdPartyCookies:true,clearHistoryOnExit:false,bandwidthEnabled:false,bandwidthMbps:10};
 const controls=['move-tab','data-folder','import-filters','protection-report','edit-bookmark','pin-bookmark','home-shortcut','clear-history','remove-history','storage','update-check','read-form','list-passwords','remove-password','import-passwords','download-action','download-directory'];
@@ -23,17 +23,21 @@ function urlOK(s){try{const u=new URL(s);return /^(https?:)$/.test(u.protocol)&&
 function clean(s){return settings.stripTracking?privacy.cleanURL(s):s;}
 function location(input){const s=String(input||'').trim();if(s===HOME)return HOME;if(urlOK(s))return clean(s);if(/^(?:localhost|(?:[\w-]+\.)+[a-z]{2,})(?::\d+)?(?:[/?#]|$)/i.test(s))return clean('https://'+s);return 'https://www.startpage.com/sp/search?query='+encodeURIComponent(s);}
 function selected(){return tabs.get(active);}
-function state(){return {tabs:[...tabs.values()].map(t=>({id:t.id,title:t.title,url:t.url,active:t.id===active,loading:t.loading})),active,bookmarks,downloads:downloads.slice(-70),settings,blocked,history,pinned,hidden,storage,filterCount:domains.size,stripped,blockReport,widevine,encryption:encryptionAvailable()};}
-function notify(){if(win&&!win.isDestroyed()&&ready)win.webContents.send('vaultie:state',state());}
-function layout(){if(!win||win.isDestroyed())return;const [w,h]=win.getContentSize();for(const t of tabs.values()){const y=htmlFullscreen?0:(panelOpen?520:113);t.view.setBounds({x:0,y,width:Math.max(1,w),height:Math.max(1,h-y-(htmlFullscreen?0:24))});}}
-function snapshot(t){if(!t||t.view.webContents.isDestroyed())return;const loaded=t.view.webContents.getURL();t.url=loaded==='vaultie://home/'||loaded==='vaultie://home'?HOME:(loaded||t.url);t.title=t.view.webContents.getTitle()||t.title;t.loading=t.view.webContents.isLoading();notify();}
-function setActive(id){const t=tabs.get(id);if(!t)return;if(active!==null&&tabs.has(active))win.contentView.removeChildView(tabs.get(active).view);active=id;win.contentView.addChildView(t.view);layout();t.view.webContents.focus();notify();}
+function state(full=true){const result={tabs:[...tabs.values()].map(t=>({id:t.id,title:t.title,url:t.url,active:t.id===active,loading:t.loading})),active,bookmarks,downloads:downloads.slice(-70),settings,blocked,history,pinned,hidden,storage,filterCount:domains.size,stripped,blockReport,widevine,encryption:encryptionAvailable()};if(!full){if(panelName!=='history')delete result.history;if(panelName!=='report')delete result.blockReport;}return result;}
+function notify(){if(win&&!win.isDestroyed()&&ready)scheduleNotify();}
+function layout(){if(!win||win.isDestroyed())return;const t=selected();if(!t?.view)return;const [w,h]=win.getContentSize();const y=htmlFullscreen?0:(panelOpen?520:113);t.view.setBounds({x:0,y,width:Math.max(1,w),height:Math.max(1,h-y-(htmlFullscreen?0:24))});}
+function snapshot(t){if(!t?.view||t.view.webContents.isDestroyed())return;const loaded=t.view.webContents.getURL();t.url=loaded==='vaultie://home/'||loaded==='vaultie://home'?HOME:(loaded||t.url);t.title=t.view.webContents.getTitle()||t.title;t.loading=t.view.webContents.isLoading();notify();}
+function setActive(id){const t=tabs.get(id);if(!t)return;if(active===id&&t.view)return;if(active!==null&&tabs.get(active)?.view){const old=tabs.get(active).view;old.setVisible(false);win.contentView.removeChildView(old);}active=id;materialize(t);win.contentView.addChildView(t.view);t.view.setVisible(true);layout();t.view.webContents.focus();notify();}
 function newTab(address=HOME,switchTo=true){
-  const id=++seq;
-  const view=new WebContentsView({webPreferences:{session:profile,contextIsolation:true,nodeIntegration:false,sandbox:true,webRTCIPHandlingPolicy:'disable_non_proxied_udp'}});
-  view.setBackgroundColor('#021b22');
-  const t={id,title:'Neuer Tab',url:HOME,view,loading:false};tabs.set(id,t);
-  const wc=view.webContents;
+ const id=++seq;const url=address===HOME?HOME:location(address);
+ const t={id,title:url===HOME?'Neuer Tab – Vaultie':new URL(url).hostname,url,view:null,loading:false,pendingAddress:url};tabs.set(id,t);
+ if(switchTo)setActive(id);notify();return id;
+}
+function materialize(t){
+ if(t.view)return;
+ const view=new WebContentsView({webPreferences:{session:profile,contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:true,webRTCIPHandlingPolicy:'disable_non_proxied_udp'}});
+ view.setBackgroundColor('#021b22');t.view=view;view.setVisible(false);
+  const wc=view.webContents;viewsByContents.set(wc.id,t);
   wc.on('did-finish-load',()=>recordHistory(t));
   wc.on('before-input-event',(event,input)=>shortcut(event,input));
   wc.on('will-attach-webview',event=>event.preventDefault());
@@ -44,17 +48,17 @@ function newTab(address=HOME,switchTo=true){
   wc.on('did-fail-load',(_e,code,description,_url,main)=>{if(main&&code!==-3){t.title='Seitenfehler: '+description;notify();}});
   wc.on('will-navigate',(e,url)=>{if(url.startsWith('vaultie://')){e.preventDefault();const command=new URL(url).hostname;if(t.url===HOME){if(command==='unpin'){const target=new URL(url).searchParams.get('url');hidden.push(target);pinned=pinned.filter(x=>x!==target);saveHome();}else if(['bookmarks','history'].includes(command))notifyAndOpen(command);} return;}if(!urlOK(url))e.preventDefault();});
   wc.setWindowOpenHandler(({url})=>{if(urlOK(url))newTab(clean(url),true);return {action:'deny'};});
-  if(switchTo||tabs.size===1)setActive(id);
-  visit(t,address);
-  notify();return id;
+  visit(t,t.pendingAddress);
+  delete t.pendingAddress;
 }
 function notifyAndOpen(name){if(win&&!win.isDestroyed())win.webContents.send('vaultie:open',name);}
 function visit(t,address){
+ if(!t.view){t.pendingAddress=address;t.url=address;return;}
  if(address===HOME){t.url=HOME;t.title='Neuer Tab – Vaultie';t.view.webContents.loadURL('vaultie://home/').catch(e=>{t.title=e.message;notify();});}
  else {const dest=location(address);t.view.webContents.loadURL(dest).catch(e=>{t.title=e.message;notify();});}
  notify();
 }
-function closeTab(id){const t=tabs.get(id);if(!t)return;if(active===id)win.contentView.removeChildView(t.view);tabs.delete(id);t.view.webContents.close();if(!tabs.size)newTab();else if(active===id)setActive([...tabs.keys()][tabs.size-1]);notify();}
+function closeTab(id){const t=tabs.get(id);if(!t)return;if(active===id)win.contentView.removeChildView(t.view);tabs.delete(id);if(t.view)viewsByContents.delete(t.view.webContents.id);t.view?.webContents.close();if(!tabs.size)newTab();else if(active===id)setActive([...tabs.keys()][tabs.size-1]);notify();}
 function persistTabs(){const items=[...tabs.values()].map(t=>({url:t.url,active:t.id===active})).filter(t=>t.url===HOME||urlOK(t.url));save(file('tabs.json'),items.slice(-25));}
 function addBookmark(){const t=selected();if(!t||!urlOK(t.url))return {error:'Nur Webseiten als Lesezeichen.'};if(!bookmarks.some(x=>x.url===t.url)){bookmarks.push({title:t.title||t.url,url:t.url});save(file('bookmarks.json'),bookmarks);}notify();return {ok:true};}
 function initFiles(){
@@ -119,9 +123,10 @@ async function setupSession(){
  await applyBandwidth();
 }
 const downloadItems=new Map();let notifyTimer;
-function scheduleNotify(){if(!notifyTimer)notifyTimer=setTimeout(()=>{notifyTimer=null;notify();},250);}
+function scheduleNotify(){if(!notifyTimer)notifyTimer=setTimeout(()=>{notifyTimer=null;flushNotify();},100);}
+function flushNotify(){if(notifyTimer){clearTimeout(notifyTimer);notifyTimer=null;}if(win&&!win.isDestroyed()&&ready)win.webContents.send('vaultie:state',state(false));}
 function firstParty(details){const frame=details.frame;try{if(frame?.top?.url&&privacy.host(frame.top.url))return frame.top.url;}catch{}
- const tab=[...tabs.values()].find(t=>t.view.webContents.id===details.webContentsId);return tab?.url||details.initiatorOrigin||'';
+ const tab=viewsByContents.get(details.webContentsId);return tab?.url||details.initiatorOrigin||'';
 }
 async function applyBandwidth(){
  if(settings.bandwidthEnabled){if(!proxy){proxy=new BandwidthProxy(settings.bandwidthMbps);await proxy.start();}proxy.configure(settings.bandwidthMbps);}
@@ -132,12 +137,12 @@ async function applyBandwidth(){
 function recordHistory(t){if(!urlOK(t.url))return;const entry={url:t.url,title:t.title,visited:new Date().toISOString()};if(history.at(-1)?.url===entry.url)history[history.length-1]=entry;else history.push(entry);history=history.slice(-2000);save(file('history.json'),history);notify();}
 function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 const defaults=[['YouTube','https://www.youtube.com/','▶','yt'],['Discord','https://discord.com/app','◉','discord'],['WhatsApp','https://web.whatsapp.com/','◉','wa'],['Gmail','https://mail.google.com/','M','gmail'],['Drive','https://drive.google.com/','▲','drive']];
-function homeHTML(){let html=fs.readFileSync(path.join(__dirname,'startseite.html'),'utf8');
+let homeTemplate;function homeHTML(){const html=homeTemplate??=fs.readFileSync(path.join(__dirname,'startseite.html'),'utf8');
  const entries=[...defaults.filter(x=>!hidden.includes(x[1])),...pinned.filter(u=>urlOK(u)&&!hidden.includes(u)&&!defaults.some(d=>d[1]===u)).map(u=>[bookmarks.find(b=>b.url===u)?.title||new URL(u).hostname,u,'★','add'])];
  const cards=entries.map(([title,url,icon,style])=>'<div style="position:relative"><a class="tile" href="'+escapeHTML(url)+'"><span class="appicon '+style+'">'+icon+'</span><strong>'+escapeHTML(title)+'</strong></a><a aria-label="Von Startseite entfernen" style="position:absolute;right:8px;top:4px;color:#b9faf4" href="vaultie://unpin?url='+encodeURIComponent(url)+'">×</a></div>').join('');
  return html.replace(/<div class="shortcutgrid">[\s\S]*?<\/div>\s*<div class="panel">/,'<div class="shortcutgrid">'+cards+'<a class="tile" href="vaultie://bookmarks"><span class="appicon add">＋</span><strong>Lesezeichen</strong></a></div><div class="panel">').replace('Der Verlauf wird niemals gespeichert.','Verlauf ausschließlich lokal gespeichert.');
 }
-function saveHome(){save(file('pinned.json'),pinned);save(file('hidden_shortcuts.json'),hidden);for(const t of tabs.values())if(t.url===HOME)t.view.webContents.reload();notify();}
+function saveHome(){save(file('pinned.json'),pinned);save(file('hidden_shortcuts.json'),hidden);for(const t of tabs.values())if(t.url===HOME&&t.view)t.view.webContents.reload();notify();}
 async function storageCheck(force=false){if(storageBusy)return storage;storageBusy=true;try{storage=await checkStorage(app.getPath('userData'),[...profiles],force);notify();return storage;}finally{storageBusy=false;}}
 function shortcut(event,input){if(input.type!=='keyDown')return;const key=input.key.toLowerCase(),ctrl=input.control||input.meta;let action;
  if(ctrl){if(key==='t')action=()=>newTab();if(key==='w')action=()=>closeTab(active);if(key==='l')action=()=>{win.webContents.focus();win.webContents.send('vaultie:open','address');};if(key==='d')action=addBookmark;if(key==='r')action=()=>selected()?.view.webContents.reload();if(key==='h')action=()=>notifyAndOpen('history');if(key==='j')action=()=>notifyAndOpen('downloads');if(key==='tab')action=()=>{const ids=[...tabs.keys()];setActive(ids[(ids.indexOf(active)+(input.shift?-1:1)+ids.length)%ids.length]);};}
@@ -170,10 +175,10 @@ function credentials(cmd,arg){
 }
 async function command(event,cmd,arg){
  if(!win||event.sender!==win.webContents)return {error:'Nicht autorisiert.'};
- const t=selected(),wc=t?.view.webContents;
+ const t=selected(),wc=t?.view?.webContents;
  switch(cmd){
  case 'state':return state();
- case 'panel':panelOpen=Boolean(arg);layout();return {ok:true};
+ case 'panel':panelName=typeof arg==='string'?arg:null;panelOpen=Boolean(arg);layout();return {ok:true};
  case 'new-tab':return newTab(typeof arg==='string'?arg:HOME);
  case 'switch-tab':setActive(Number(arg));break;
  case 'close-tab':closeTab(Number(arg));break;
@@ -206,8 +211,8 @@ async function command(event,cmd,arg){
  }
  notify();return {ok:true};
 }
-ipcMain.handle('vaultie:command',async(...args)=>{try{return await command(...args);}catch(e){return {error:String(e.message||e)};}});
- ipcMain.on('vaultie:page-policy',(event)=>{const tab=[...tabs.values()].find(t=>t.view.webContents===event.sender);let cookieBlocked=false;try{cookieBlocked=settings.thirdPartyCookies&&event.senderFrame!==event.senderFrame.top&&privacy.thirdParty(event.senderFrame.url,event.senderFrame.top.url);}catch{}event.returnValue=tab?{fingerprinting:settings.fingerprinting,seed,cookieBlocked}:{};});
+ipcMain.handle('vaultie:command',async(...args)=>{try{const result=await command(...args);if(!['state','get-password','list-passwords','read-form','drm','update-check','protection-report'].includes(args[1]))flushNotify();return result;}catch(e){return {error:String(e.message||e)};}});
+ ipcMain.on('vaultie:page-policy',(event)=>{const tab=viewsByContents.get(event.sender.id);let cookieBlocked=false;try{cookieBlocked=settings.thirdPartyCookies&&event.senderFrame!==event.senderFrame.top&&privacy.thirdParty(event.senderFrame.url,event.senderFrame.top.url);}catch{}event.returnValue=tab?{fingerprinting:settings.fingerprinting,seed,cookieBlocked}:{};});
 
 app.whenReady().then(async()=>{
  initFiles();await setupSession();
@@ -221,11 +226,11 @@ app.whenReady().then(async()=>{
  const restore=read(file('tabs.json'),[]);
  if(settings.rememberSessions&&Array.isArray(restore)&&restore.length){let restoredActive;for(const entry of restore.slice(0,20)){if(entry.url!==HOME&&!urlOK(entry.url))continue;const id=newTab(entry.url,false);if(entry.active)restoredActive=id;}if(tabs.size)setActive(restoredActive||[...tabs.keys()][0]);else newTab();}
  else newTab(HOME);
- layout();notify();setInterval(()=>storageCheck().catch(()=>{}),60000).unref();storageCheck().catch(()=>{});if(process.env.VAULTIE_SMOKE==='1'){try{await require('./test/electron-smoke')({win,profile,command,tabs,homeHTML,closeTab});console.log('VAULTIE_SMOKE_OK');app.exit(0);}catch(e){console.error('VAULTIE_SMOKE_FAILED',e);app.exit(1);}}
+ layout();notify();setInterval(()=>storageCheck().catch(()=>{}),60000).unref();storageCheck().catch(()=>{});if(process.env.VAULTIE_PERF==='1'){await require(process.env.VAULTIE_PERF_SCRIPT)({win,tabs,newTab});return;}if(process.env.VAULTIE_SMOKE==='1'){try{await require('./test/electron-smoke')({win,profile,command,tabs,homeHTML,closeTab,newTab});console.log('VAULTIE_SMOKE_OK');app.exit(0);}catch(e){console.error('VAULTIE_SMOKE_FAILED',e);app.exit(1);}}
 }).catch(e=>{console.error('Vaultie startup error',e);dialog.showErrorBox('Vaultie Startfehler',String(e.message||e));app.quit();});
 app.on('window-all-closed',()=>{proxy?.stop().catch(()=>{});app.quit();});
 async function extraCommand(cmd,arg){
- const t=selected(),wc=t?.view.webContents;
+ const t=selected(),wc=t?.view?.webContents;
  switch(cmd){
  case 'move-tab':{const ids=[...tabs.keys()],from=ids.indexOf(Number(arg?.from)),to=ids.indexOf(Number(arg?.to));if(from>=0&&to>=0){ids.splice(to,0,ids.splice(from,1)[0]);tabs=new Map(ids.map(id=>[id,tabs.get(id)]));notify();}return {ok:true};}
  case 'data-folder':await shell.openPath(dir);return {ok:true};

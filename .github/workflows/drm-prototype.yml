@@ -62,7 +62,7 @@ jobs:
       - name: Upload internal test artifact (no public release)
         uses: actions/upload-artifact@v4
         with:
-          name: Vaultie-castLabs-Windows-v0.3.0
+          name: Vaultie-castLabs-Windows-v0.4.0
           path: |
             drm-prototype/output/*.exe
             drm-prototype/output/*.blockmap

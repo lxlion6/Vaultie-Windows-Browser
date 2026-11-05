@@ -8,8 +8,10 @@ function error(err){$('status').textContent='Fehler: '+String(err?.message||err)
 function paragraph(container,text,cls='muted'){container.appendChild(node('p',text,cls));}
 function row(container,label,...controls){const r=node('div',undefined,'entry');r.appendChild(node('span',label,'caption'));for(const c of controls)r.appendChild(c);container.appendChild(r);return r;}
 function active(){return model.tabs.find(t=>t.id===model.active)||null;}
+let tabSignature='',panelSignature='';
 function update(data){
- model=data;
+ model={...model,...data};data=model;
+ const signature=JSON.stringify(data.tabs);if(signature!==tabSignature){tabSignature=signature;
  const list=$('tabs');list.replaceChildren();
  for(const tab of data.tabs){
   const el=node('div',undefined,'tab'+(tab.active?' active':''));
@@ -20,6 +22,7 @@ function update(data){
   el.addEventListener('click',()=>command('switch-tab',tab.id).catch(error));
   list.appendChild(el);
  }
+ }
  const current=active();if(document.activeElement!==$('address'))$('address').value=current?.url==='vaultie://home'?'':(current?.url||'');
  $('back').disabled=!current;
  $('forward').disabled=!current;
@@ -27,13 +30,14 @@ function update(data){
  $('shield').textContent=data.settings.adblock?'◆ Schutz aktiv':'◇ Schutz aus';
  $('downloads').textContent='↓ Downloads'+(data.downloads.filter(d=>d.status==='Lädt'||d.status==='Pausiert').length?' ('+data.downloads.filter(d=>d.status==='Lädt'||d.status==='Pausiert').length+')':'');
  $('status').textContent=(current?.loading?'Lade Webseite …':'Verlauf ausschließlich lokal gespeichert')+' | DRM: '+(data.widevine||'unbekannt').slice(0,110);
- if(shown==='downloads'||shown==='report')refresh(shown);
+ if(shown==='downloads'||shown==='report'){const signature=JSON.stringify(shown==='downloads'?data.downloads:[data.blocked,data.stripped,data.filterCount,data.blockReport]);if(signature!==panelSignature){panelSignature=signature;refresh(shown);}}
 }
 async function show(name){
  if(shown===name){await hide();return;}
  shown=name;
  $('panel').classList.add('visible');
- await command('panel',true);
+ await command('panel',name);
+ update(await command('state'));
  refresh(name);
 }
 async function hide(){

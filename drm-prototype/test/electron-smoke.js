@@ -1,6 +1,6 @@
 'use strict';
 const assert=require('node:assert/strict');
-module.exports=async({win,profile,command,tabs,homeHTML})=>{
+module.exports=async({win,profile,command,tabs,homeHTML,newTab})=>{
  const timer=setTimeout(()=>{console.error('Smoke timeout');require('electron').app.exit(1);},45000);
  try{
   if(process.env.VAULTIE_SCREENSHOT){await new Promise(r=>setTimeout(r,400));require('node:fs').writeFileSync(process.env.VAULTIE_SCREENSHOT,(await win.capturePage()).toPNG());}
@@ -18,7 +18,7 @@ module.exports=async({win,profile,command,tabs,homeHTML})=>{
   await call('settings',{key:'bandwidthEnabled',value:false});
   assert.equal(await profile.resolveProxy('https://example.org'),'DIRECT');
   const http=require('node:http');const server=http.createServer((_req,res)=>res.end('<title>Testseite</title><p>Vaultie Test</p>'));await new Promise(r=>server.listen(0,'127.0.0.1',r));
-  try{await call('navigate','http://127.0.0.1:'+server.address().port+'/');const page=[...tabs.values()][0].view.webContents;if(page.isLoading())await new Promise(r=>page.once('did-stop-loading',r));assert.equal(await page.executeJavaScript('navigator.hardwareConcurrency'),4);assert.equal((await call('bookmark')).ok,true);const url=page.getURL();await call('pin-bookmark',url);assert(homeHTML().includes(url));assert((await call('state')).history.some(h=>h.url===url));}finally{server.close();}
+  try{await call('navigate','http://127.0.0.1:'+server.address().port+'/');const page=[...tabs.values()][0].view.webContents;if(page.isLoading())await new Promise(r=>page.once('did-stop-loading',r));assert.equal(await page.executeJavaScript('navigator.hardwareConcurrency'),4);await page.executeJavaScript('window.__retained="keep"');const first=[...tabs.keys()][0];const cold=newTab('http://127.0.0.1:'+server.address().port+'/?cold',false);assert.equal(tabs.get(cold).view,null);await call('switch-tab',cold);const coldPage=tabs.get(cold).view.webContents;if(coldPage.isLoading())await new Promise(r=>coldPage.once('did-stop-loading',r));assert.match(coldPage.getURL(),/cold/);await call('switch-tab',first);assert.equal(await page.executeJavaScript('window.__retained'),'keep');await call('close-tab',cold);assert.equal((await call('bookmark')).ok,true);const url=page.getURL();await call('pin-bookmark',url);assert(homeHTML().includes(url));assert((await call('state')).history.some(h=>h.url===url));}finally{server.close();}
 
   await call('new-tab','vaultie://home');
   const wc=[...tabs.values()].at(-1).view.webContents;
